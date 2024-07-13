@@ -190,7 +190,7 @@ function M.completefunc(findstart, base)
 		for _, item in pairs(items) do
 			local text = item.filterText
 				or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-			if next(vim.fn.matchfuzzy({ text }, base)) then
+			if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
 				table.insert(matches, item)
 			end
 		end
