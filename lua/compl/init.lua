@@ -1,3 +1,6 @@
+local vim = vim
+local unpack = unpack
+
 local function au(event, callback, desc)
 	vim.api.nvim_create_autocmd(event, {
 		group = vim.api.nvim_create_augroup("Compl", { clear = false }),
@@ -83,31 +86,102 @@ end
 ---@param base string The text with which completion items should match
 ---@return integer|table # A list of matching words
 function M.completefunc(findstart, base)
+	-- Get completion items
 	if M.completion.status == "DONE" then
 		local bufnr = vim.api.nvim_get_current_buf()
 		local position_params = vim.lsp.util.make_position_params()
+
 		M.completion.status = "SENT"
 		vim.lsp.buf_request_all(bufnr, "textDocument/completion", position_params, function(responses)
-			M.completion.responses = responses
 			M.completion.status = "RECEIVED"
+
+			--[[
+				Apply itemDefaults to completion item according to the LSP specs:
+
+				"In many cases the items of an actual completion result share the same
+				value for properties like `commitCharacters` or the range of a text
+				edit. A completion list can therefore define item defaults which will
+				be used if a completion item itself doesn't specify the value.
+
+				If a completion list specifies a default value and a completion item
+				also specifies a corresponding value the one from the item is used.
+
+				Servers are only allowed to return default values if the client
+				signals support for this via the `completionList.itemDefaults`
+				capability."
+			--]]
+			for _, response in pairs(responses) do
+				if response.err or not response.result then
+					goto continue
+				end
+
+				local items = response.result.items or response.result or {}
+				for _, item in pairs(items) do
+					local itemDefaults = response.result.itemDefaults
+					if itemDefaults then
+						-- https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/completion.lua#L173
+						item.insertTextFormat = item.insertTextFormat or itemDefaults.insertTextFormat
+						item.insertTextMode = item.insertTextMode or itemDefaults.insertTextMode
+						item.data = item.data or itemDefaults.data
+						if itemDefaults.editRange then
+							local textEdit = item.textEdit or {}
+							item.textEdit = textEdit
+							textEdit.newText = textEdit.newText or item.textEditText or item.insertText
+							if itemDefaults.editRange.start then
+								textEdit.range = textEdit.range or itemDefaults.editRange
+							elseif itemDefaults.editRange.insert then
+								textEdit.insert = itemDefaults.editRange.insert
+								textEdit.replace = itemDefaults.editRange.replace
+							end
+						end
+					end
+				end
+				::continue::
+			end
+
+			M.completion.responses = responses
 			M.start_completion()
 		end)
+
 		return findstart == 1 and -3 or {}
 	end
 
+	-- Find completion start
 	if findstart == 1 then
-		return M.findstart()
+		-- Get server start
+		for _, response in pairs(M.completion.responses) do
+			if response.err or not response.result then
+				goto continue
+			end
+
+			local items = response.result.items or response.result or {}
+			for _, item in pairs(items) do
+				-- https://github.com/echasnovski/mini.completion/blob/main/lua/mini/completion.lua#L1306
+				if type(item.textEdit) == "table" then
+					local range = type(item.textEdit.range) == "table" and item.textEdit.range or item.textEdit.insert
+					return range.start.character
+				end
+			end
+
+			::continue::
+		end
+
+		-- Fallback to client start
+		local _, col = unpack(vim.api.nvim_win_get_cursor(0))
+		local line = vim.api.nvim_get_current_line()
+		return vim.fn.match(line:sub(1, col), "\\k*$")
 	end
 
 	M.completion.status = "DONE"
 
+	-- Process and find completion words
 	local words = {}
 	for client_id, response in pairs(M.completion.responses) do
 		if response.err or not response.result then
 			goto continue
 		end
 
-		local items = response.result.items or response.result
+		local items = response.result.items or response.result or {}
 		if vim.tbl_isempty(items) then
 			goto continue
 		end
@@ -125,7 +199,7 @@ function M.completefunc(findstart, base)
 			return (a.sortText or a.label) < (b.sortText or b.label)
 		end)
 
-		for _, item in pairs(matches) do
+		for _, item in ipairs(matches) do
 			local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
 			local word
 			if kind == "Snippet" then
@@ -150,12 +224,6 @@ function M.completefunc(findstart, base)
 	end
 
 	return words
-end
-
-function M.findstart()
-	local col = vim.api.nvim_win_get_cursor(0)[2]
-	local line = vim.api.nvim_get_current_line()
-	return vim.fn.match(line:sub(1, col), "\\k*$")
 end
 
 return M
