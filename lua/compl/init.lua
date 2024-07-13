@@ -95,21 +95,15 @@ function M.completefunc(findstart, base)
 		vim.lsp.buf_request_all(bufnr, "textDocument/completion", position_params, function(responses)
 			M.completion.status = "RECEIVED"
 
-			--[[
-				Apply itemDefaults to completion item according to the LSP specs:
-
-				"In many cases the items of an actual completion result share the same
-				value for properties like `commitCharacters` or the range of a text
-				edit. A completion list can therefore define item defaults which will
-				be used if a completion item itself doesn't specify the value.
-
-				If a completion list specifies a default value and a completion item
-				also specifies a corresponding value the one from the item is used.
-
-				Servers are only allowed to return default values if the client
-				signals support for this via the `completionList.itemDefaults`
-				capability."
-			--]]
+			-- Apply itemDefaults to completion item as per the LSP specs:
+			--
+			-- "In many cases the items of an actual completion result share the same
+			-- value for properties like `commitCharacters` or the range of a text
+			-- edit. A completion list can therefore define item defaults which will
+			-- be used if a completion item itself doesn't specify the value.
+			--
+			-- If a completion list specifies a default value and a completion item
+			-- also specifies a corresponding value the one from the item is used."
 			for _, response in pairs(responses) do
 				if response.err or not response.result then
 					goto continue
@@ -148,7 +142,22 @@ function M.completefunc(findstart, base)
 
 	-- Find completion start
 	if findstart == 1 then
-		-- Get server start
+		-- Example from: https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/completion.lua#L331
+		-- Completion response items may be relative to a position different than `client_start_boundary`.
+		-- Concrete example, with lua-language-server:
+		--
+		-- require('plenary.asy|
+		--         ▲       ▲   ▲
+		--         │       │   └── cursor_pos:                     20
+		--         │       └────── client_start_boundary:          17
+		--         └────────────── textEdit.range.start.character: 9
+		--                                 .newText = 'plenary.async'
+		--                  ^^^
+		--                  prefix (We'd remove everything not starting with `asy`,
+		--                  so we'd eliminate the `plenary.async` result
+		--
+		-- `adjust_start_col` is used to prefer the language server boundary.
+		--
 		for _, response in pairs(M.completion.responses) do
 			if response.err or not response.result then
 				goto continue
@@ -156,6 +165,7 @@ function M.completefunc(findstart, base)
 
 			local items = response.result.items or response.result or {}
 			for _, item in pairs(items) do
+				-- Get server start (if completion item has text edits)
 				-- https://github.com/echasnovski/mini.completion/blob/main/lua/mini/completion.lua#L1306
 				if type(item.textEdit) == "table" then
 					local range = type(item.textEdit.range) == "table" and item.textEdit.range or item.textEdit.insert
@@ -166,7 +176,7 @@ function M.completefunc(findstart, base)
 			::continue::
 		end
 
-		-- Fallback to client start
+		-- Fallback to client start (if completion item does not provide text edits)
 		local _, col = unpack(vim.api.nvim_win_get_cursor(0))
 		local line = vim.api.nvim_get_current_line()
 		return vim.fn.match(line:sub(1, col), "\\k*$")
