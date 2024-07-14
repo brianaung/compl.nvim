@@ -53,15 +53,15 @@ function M.setup()
 end
 
 function M.start_completion()
+	local bufnr = vim.api.nvim_get_current_buf()
 	if
 		vim.fn.pumvisible() ~= 0
 		or vim.fn.state "m" == "m"
-		or vim.api.nvim_get_option_value("buftype", { buf = 0 }) ~= ""
+		or vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= ""
 	then
 		return
 	end
 
-	local bufnr = vim.api.nvim_get_current_buf()
 	if has_lsp_clients(bufnr) then
 		vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
 	else
@@ -86,9 +86,12 @@ end
 ---@param base string The text with which completion items should match
 ---@return integer|table # A list of matching words
 function M.completefunc(findstart, base)
+	local bufnr = vim.api.nvim_get_current_buf()
+	local winnr = vim.api.nvim_get_current_win()
+	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+
 	-- Get completion items
 	if M.completion.status == "DONE" then
-		local bufnr = vim.api.nvim_get_current_buf()
 		local position_params = vim.lsp.util.make_position_params()
 
 		M.completion.status = "SENT"
@@ -177,7 +180,6 @@ function M.completefunc(findstart, base)
 		end
 
 		-- Fallback to client start (if completion item does not provide text edits)
-		local _, col = unpack(vim.api.nvim_win_get_cursor(0))
 		local line = vim.api.nvim_get_current_line()
 		return vim.fn.match(line:sub(1, col), "\\k*$")
 	end
@@ -217,8 +219,11 @@ function M.completefunc(findstart, base)
 			else
 				word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
 			end
+
+			local word_to_replace = vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + #word, {})
+
 			table.insert(words, {
-				word = word,
+				word = vim.list_contains(word_to_replace, word) and "" or word,
 				abbr = item.label,
 				kind = kind,
 				icase = 1,
