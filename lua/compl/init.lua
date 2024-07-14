@@ -162,7 +162,7 @@ function M.completefunc(findstart, base)
 		--                  prefix (We'd remove everything not starting with `asy`,
 		--                  so we'd eliminate the `plenary.async` result
 		--
-		-- `adjust_start_col` is used to prefer the language server boundary.
+		-- We prefer to use the language server boundary if available.
 		--
 		for _, response in pairs(M.completion.responses) do
 			if not response.err and response.result then
@@ -203,7 +203,8 @@ function M.completefunc(findstart, base)
 				item.exact = text == base
 			end
 
-			-- Sorting is done is 4 stages. If it fails to find diff in each stage, it will fallback to next stage.
+			-- Sorting is done with multiple fallbacks.
+			-- If it fails to find diff in each stage, it will then fallback to the next stage.
 			-- https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/compare.lua
 			table.sort(matches, function(a, b)
 				-- Sort by exact matches
@@ -213,10 +214,6 @@ function M.completefunc(findstart, base)
 
 				-- Sort by ordinal value of 'kind'.
 				-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
-				-- local kind_a = a.kind
-				-- local kind_b = b.kind
-				-- kind_a = vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" and 100 or a.kind
-				-- kind_b = vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" and 100 or b.kind
 				if a.kind ~= b.kind then
 					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
 						return true
@@ -273,8 +270,9 @@ function M.completefunc(findstart, base)
 					empty = 1,
 					user_data = {
 						nvim = {
-							replaced_word = vim.list_contains(word_to_be_replaced, word) and word or "",
 							lsp = { completion_item = item, client_id = client_id },
+							-- keep track of word replace to update cursor pos after completedone
+							replaced_word = vim.list_contains(word_to_be_replaced, word) and word or "",
 						},
 					},
 				})
@@ -320,7 +318,6 @@ function M.on_completedonepre()
 			local edits = response.result.additionalTextEdits or {}
 			if not vim.tbl_isempty(edits) then
 				local offset_encoding = vim.lsp.get_client_by_id(client_id).offset_encoding
-
 				vim.lsp.util.apply_text_edits(edits, bufnr, offset_encoding)
 				return
 			end
