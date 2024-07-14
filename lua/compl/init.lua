@@ -108,32 +108,29 @@ function M.completefunc(findstart, base)
 			-- If a completion list specifies a default value and a completion item
 			-- also specifies a corresponding value the one from the item is used."
 			for _, response in pairs(responses) do
-				if response.err or not response.result then
-					goto continue
-				end
-
-				local items = response.result.items or response.result or {}
-				for _, item in pairs(items) do
-					local itemDefaults = response.result.itemDefaults
-					if itemDefaults then
-						-- https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/completion.lua#L173
-						item.insertTextFormat = item.insertTextFormat or itemDefaults.insertTextFormat
-						item.insertTextMode = item.insertTextMode or itemDefaults.insertTextMode
-						item.data = item.data or itemDefaults.data
-						if itemDefaults.editRange then
-							local textEdit = item.textEdit or {}
-							item.textEdit = textEdit
-							textEdit.newText = textEdit.newText or item.textEditText or item.insertText
-							if itemDefaults.editRange.start then
-								textEdit.range = textEdit.range or itemDefaults.editRange
-							elseif itemDefaults.editRange.insert then
-								textEdit.insert = itemDefaults.editRange.insert
-								textEdit.replace = itemDefaults.editRange.replace
+				if not response.err and response.result then
+					local items = response.result.items or response.result or {}
+					for _, item in pairs(items) do
+						local itemDefaults = response.result.itemDefaults
+						if itemDefaults then
+							-- https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/completion.lua#L173
+							item.insertTextFormat = item.insertTextFormat or itemDefaults.insertTextFormat
+							item.insertTextMode = item.insertTextMode or itemDefaults.insertTextMode
+							item.data = item.data or itemDefaults.data
+							if itemDefaults.editRange then
+								local textEdit = item.textEdit or {}
+								item.textEdit = textEdit
+								textEdit.newText = textEdit.newText or item.textEditText or item.insertText
+								if itemDefaults.editRange.start then
+									textEdit.range = textEdit.range or itemDefaults.editRange
+								elseif itemDefaults.editRange.insert then
+									textEdit.insert = itemDefaults.editRange.insert
+									textEdit.replace = itemDefaults.editRange.replace
+								end
 							end
 						end
 					end
 				end
-				::continue::
 			end
 
 			M.completion.responses = responses
@@ -162,21 +159,18 @@ function M.completefunc(findstart, base)
 		-- `adjust_start_col` is used to prefer the language server boundary.
 		--
 		for _, response in pairs(M.completion.responses) do
-			if response.err or not response.result then
-				goto continue
-			end
-
-			local items = response.result.items or response.result or {}
-			for _, item in pairs(items) do
-				-- Get server start (if completion item has text edits)
-				-- https://github.com/echasnovski/mini.completion/blob/main/lua/mini/completion.lua#L1306
-				if type(item.textEdit) == "table" then
-					local range = type(item.textEdit.range) == "table" and item.textEdit.range or item.textEdit.insert
-					return range.start.character
+			if not response.err and response.result then
+				local items = response.result.items or response.result or {}
+				for _, item in pairs(items) do
+					-- Get server start (if completion item has text edits)
+					-- https://github.com/echasnovski/mini.completion/blob/main/lua/mini/completion.lua#L1306
+					if type(item.textEdit) == "table" then
+						local range = type(item.textEdit.range) == "table" and item.textEdit.range
+							or item.textEdit.insert
+						return range.start.character
+					end
 				end
 			end
-
-			::continue::
 		end
 
 		-- Fallback to client start (if completion item does not provide text edits)
@@ -189,53 +183,46 @@ function M.completefunc(findstart, base)
 	-- Process and find completion words
 	local words = {}
 	for client_id, response in pairs(M.completion.responses) do
-		if response.err or not response.result then
-			goto continue
-		end
+		if not response.err and response.result then
+			local items = response.result.items or response.result or {}
 
-		local items = response.result.items or response.result or {}
-		if vim.tbl_isempty(items) then
-			goto continue
-		end
-
-		local matches = {}
-		for _, item in pairs(items) do
-			local text = item.filterText
-				or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-			if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
-				table.insert(matches, item)
-			end
-		end
-
-		table.sort(matches, function(a, b)
-			return (a.sortText or a.label) < (b.sortText or b.label)
-		end)
-
-		for _, item in ipairs(matches) do
-			local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
-			local word
-			if kind == "Snippet" then
-				word = item.label or ""
-			else
-				word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
+			local matches = {}
+			for _, item in pairs(items) do
+				local text = item.filterText
+					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
+				if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
+					table.insert(matches, item)
+				end
 			end
 
-			local word_to_replace = vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + #word, {})
+			table.sort(matches, function(a, b)
+				return (a.sortText or a.label) < (b.sortText or b.label)
+			end)
 
-			table.insert(words, {
-				word = vim.list_contains(word_to_replace, word) and "" or word,
-				abbr = item.label,
-				kind = kind,
-				icase = 1,
-				dup = 1,
-				empty = 1,
-				user_data = {
-					nvim = { lsp = { completion_item = item, client_id = client_id } },
-				},
-			})
+			for _, item in ipairs(matches) do
+				local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+				local word
+				if kind == "Snippet" then
+					word = item.label or ""
+				else
+					word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
+				end
+
+				local word_to_replace = vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + #word, {})
+
+				table.insert(words, {
+					word = vim.list_contains(word_to_replace, word) and "" or word,
+					abbr = item.label,
+					kind = kind,
+					icase = 1,
+					dup = 1,
+					empty = 1,
+					user_data = {
+						nvim = { lsp = { completion_item = item, client_id = client_id } },
+					},
+				})
+			end
 		end
-
-		::continue::
 	end
 
 	return words
