@@ -225,7 +225,10 @@ function M.completefunc(findstart, base)
 					dup = 1,
 					empty = 1,
 					user_data = {
-						nvim = { lsp = { completion_item = item, client_id = client_id } },
+						nvim = {
+							replaced_word = vim.list_contains(word_to_be_replaced, word) and word or "",
+							lsp = { completion_item = item, client_id = client_id },
+						},
 					},
 				})
 			end
@@ -236,6 +239,7 @@ function M.completefunc(findstart, base)
 end
 
 function M.on_completedonepre()
+	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
@@ -244,17 +248,20 @@ function M.on_completedonepre()
 		return
 	end
 
+	local completed_word = vim.v.completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
-	local word
-	if kind == "Snippet" then
-		word = item.label or ""
-	else
-		word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
-	end
 
 	-- No words were inserted since it is a duplicate, so set cursor to end of duplicate word
-	if vim.v.completed_item.word == "" then
-		vim.api.nvim_win_set_cursor(winnr, { row, col + vim.fn.strwidth(word) })
+	if completed_word == "" then
+		local replaced_word = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "replaced_word") or ""
+		vim.api.nvim_win_set_cursor(winnr, { row, col + vim.fn.strwidth(replaced_word) })
+	end
+
+	-- Expand snippet only if word is inserted, not replaced
+	if kind == "Snippet" and completed_word ~= "" then
+		vim.api.nvim_buf_set_text(bufnr, row - 1, col - vim.fn.strwidth(completed_word), row - 1, col, { "" })
+		vim.api.nvim_win_set_cursor(winnr, { row, col - vim.fn.strwidth(completed_word) })
+		vim.snippet.expand(vim.tbl_get(item, "textEdit", "newText") or item.insertText or "")
 	end
 end
 
