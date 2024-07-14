@@ -199,10 +199,57 @@ function M.completefunc(findstart, base)
 				if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
 					table.insert(matches, item)
 				end
+				-- Add extra field to check for exact matches
+				item.exact = text == base
 			end
 
+			-- Sorting is done is 4 stages. If it fails to find diff in each stage, it will fallback to next stage.
+			-- https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/compare.lua
 			table.sort(matches, function(a, b)
-				return (a.sortText or a.label) < (b.sortText or b.label)
+				-- Sort by exact matches
+				if a.exact ~= b.exact then
+					return a.exact
+				end
+
+				-- Sort by ordinal value of 'kind'.
+				-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
+				-- local kind_a = a.kind
+				-- local kind_b = b.kind
+				-- kind_a = vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" and 100 or a.kind
+				-- kind_b = vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" and 100 or b.kind
+				if a.kind ~= b.kind then
+					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
+						return true
+					end
+					if vim.lsp.protocol.CompletionItemKind[b.kind] == "Snippet" then
+						return false
+					end
+					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" then
+						return false
+					end
+					if vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" then
+						return true
+					end
+					local diff = a.kind - b.kind
+					if diff < 0 then
+						return true
+					elseif diff > 0 then
+						return false
+					end
+				end
+
+				-- Sort by lexicographical order of 'sortText'.
+				if a.sortText and b.sortText then
+					local diff = vim.stricmp(a.sortText, b.sortText)
+					if diff < 0 then
+						return true
+					elseif diff > 0 then
+						return false
+					end
+				end
+
+				-- Sort by length
+				return #a.label < #b.label
 			end)
 
 			for _, item in ipairs(matches) do
