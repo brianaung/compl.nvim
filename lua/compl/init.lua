@@ -286,17 +286,18 @@ function M.completefunc(findstart, base)
 end
 
 function M.on_completedonepre()
+	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
+	local completion_item = lsp_data.completion_item or {}
+	if vim.tbl_isempty(completion_item) then
+		return
+	end
+
 	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
-	local item = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp", "completion_item") or {}
-	if vim.tbl_isempty(item) then
-		return
-	end
-
 	local completed_word = vim.v.completed_item.word or ""
-	local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
 
 	-- No words were inserted since it is a duplicate, so set cursor to end of duplicate word
 	if completed_word == "" then
@@ -308,7 +309,28 @@ function M.on_completedonepre()
 	if kind == "Snippet" and completed_word ~= "" then
 		vim.api.nvim_buf_set_text(bufnr, row - 1, col - vim.fn.strwidth(completed_word), row - 1, col, { "" })
 		vim.api.nvim_win_set_cursor(winnr, { row, col - vim.fn.strwidth(completed_word) })
-		vim.snippet.expand(vim.tbl_get(item, "textEdit", "newText") or item.insertText or "")
+		vim.snippet.expand(vim.tbl_get(completion_item, "textEdit", "newText") or completion_item.insertText or "")
+	end
+
+	-- TODO make it async
+	-- Apply additional text edits
+	local resolved_responses = vim.lsp.buf_request_sync(bufnr, "completionItem/resolve", completion_item, 1000)
+	for client_id, response in pairs(resolved_responses) do
+		if not response.err and response.result then
+			local edits = response.result.additionalTextEdits or {}
+			if not vim.tbl_isempty(edits) then
+				local offset_encoding = vim.lsp.get_client_by_id(client_id).offset_encoding
+
+				vim.lsp.util.apply_text_edits(edits, bufnr, offset_encoding)
+				return
+			end
+		end
+	end
+	local edits = completion_item.additionalTextEdits or {}
+	local client_id = lsp_data.client_id
+	if not vim.tbl_isempty(edits) then
+		local offset_encoding = vim.lsp.get_client_by_id(client_id).offset_encoding
+		vim.lsp.util.apply_text_edits(edits, bufnr, offset_encoding)
 	end
 end
 
