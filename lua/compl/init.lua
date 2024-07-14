@@ -50,6 +50,12 @@ function M.setup()
 		debounce(M.completion.timer, M.completion.timeout, M.start_completion),
 		"Trigger auto completion."
 	)
+
+	au(
+		"CompleteDonePre",
+		M.on_completedonepre,
+		"Additional text edits and commands to run after insert mode completion is done."
+	)
 end
 
 function M.start_completion()
@@ -208,10 +214,11 @@ function M.completefunc(findstart, base)
 					word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
 				end
 
-				local word_to_replace = vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + #word, {})
+				local word_to_be_replaced =
+					vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + vim.fn.strwidth(word), {})
 
 				table.insert(words, {
-					word = vim.list_contains(word_to_replace, word) and "" or word,
+					word = vim.list_contains(word_to_be_replaced, word) and "" or word,
 					abbr = item.label,
 					kind = kind,
 					icase = 1,
@@ -226,6 +233,29 @@ function M.completefunc(findstart, base)
 	end
 
 	return words
+end
+
+function M.on_completedonepre()
+	local winnr = vim.api.nvim_get_current_win()
+	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+
+	local item = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp", "completion_item") or {}
+	if vim.tbl_isempty(item) then
+		return
+	end
+
+	local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+	local word
+	if kind == "Snippet" then
+		word = item.label or ""
+	else
+		word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
+	end
+
+	-- No words were inserted since it is a duplicate, so set cursor to end of duplicate word
+	if vim.v.completed_item.word == "" then
+		vim.api.nvim_win_set_cursor(winnr, { row, col + vim.fn.strwidth(word) })
+	end
 end
 
 return M
