@@ -290,6 +290,7 @@ function M.on_completedonepre()
 		return
 	end
 
+	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
 	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
@@ -310,24 +311,23 @@ function M.on_completedonepre()
 		vim.snippet.expand(vim.tbl_get(completion_item, "textEdit", "newText") or completion_item.insertText or "")
 	end
 
-	-- TODO make it async
-	-- Apply additional text edits
-	local resolved_responses = vim.lsp.buf_request_sync(bufnr, "completionItem/resolve", completion_item, 1000)
-	for client_id, response in pairs(resolved_responses) do
-		if not response.err and response.result then
-			local edits = response.result.additionalTextEdits or {}
-			if not vim.tbl_isempty(edits) then
-				local offset_encoding = vim.lsp.get_client_by_id(client_id).offset_encoding
-				vim.lsp.util.apply_text_edits(edits, bufnr, offset_encoding)
-				return
-			end
-		end
-	end
+	-- Apply additionalTextEdits
 	local edits = completion_item.additionalTextEdits or {}
-	local client_id = lsp_data.client_id
 	if not vim.tbl_isempty(edits) then
-		local offset_encoding = vim.lsp.get_client_by_id(client_id).offset_encoding
-		vim.lsp.util.apply_text_edits(edits, bufnr, offset_encoding)
+		vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
+	else
+		-- TODO fix bug
+		-- Reproduce:
+		-- 1. Insert newline(s) right after completing an item without exiting insert mode.
+		-- 2. Undo changes.
+		-- Result: Completed item is not removed without the undo changes.
+		client.request("completionItem/resolve", completion_item, function(err, result)
+			edits = (not err) and (result.additionalTextEdits or {}) or {}
+			if not vim.tbl_isempty(edits) then
+				-- vim.cmd [[silent! undojoin]]
+				vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
+			end
+		end)
 	end
 end
 
