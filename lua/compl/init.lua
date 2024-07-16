@@ -26,14 +26,26 @@ end
 
 local M = {}
 
+M.opts = {
+	-- TODO potential improvement
+	-- Fuzzy 'false' provides a more consistent behavior with the current design because...
+	-- After the initial trigger, ins-completion-menu mechanism kicks in and take control of filtering matches as you type.
+	-- It does not use fuzzy matching.
+	-- When there are no more matches, the popup menu closes, and then custom completefunc re-triggers, assuming you keep typing.
+	-- And these results can re-include items which are previously filtered out (if fuzzy = true), which can feel inconsistent.
+	fuzzy = false,
+	completion = {
+		timeout = 100,
+	},
+}
+
 M.completion = {
 	timer = vim.uv.new_timer(),
-	timeout = 100,
 	status = "DONE",
 	responses = {},
 }
 
-function M.setup()
+function M.setup(opts)
 	if vim.fn.has "nvim-0.10" ~= 1 then
 		vim.notify("compl.nvim requires nvim-0.10 or higher. ", vim.log.levels.ERROR)
 		return
@@ -41,13 +53,17 @@ function M.setup()
 
 	_G.Completefunc = M.completefunc
 
+	-- apply user configuration options
+	opts = opts or {}
+	M.opts = vim.tbl_deep_extend("force", M.opts, opts)
+
 	au({ "BufEnter", "LspAttach" }, function(e)
 		vim.bo[e.buf].completefunc = "v:lua.Completefunc"
 	end, "Set completion function.")
 
 	au(
 		"InsertCharPre",
-		debounce(M.completion.timer, M.completion.timeout, M.start_completion),
+		debounce(M.completion.timer, M.opts.completion.timeout, M.start_completion),
 		"Trigger auto completion."
 	)
 
@@ -196,8 +212,14 @@ function M.completefunc(findstart, base)
 			for _, item in pairs(items) do
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-				if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
-					table.insert(matches, item)
+				if M.opts.fuzzy then
+					if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
+						table.insert(matches, item)
+					end
+				else
+					if vim.startswith(text, base) then
+						table.insert(matches, item)
+					end
 				end
 				-- Add extra field to check for exact matches
 				item.exact = text == base
