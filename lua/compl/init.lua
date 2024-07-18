@@ -33,14 +33,14 @@ M.opts = {
 	},
 }
 
-M.completion = {
-	timer = vim.uv.new_timer(),
-	responses = {},
-}
-
 M.context = {
 	cursor = nil,
 	pending_requests = {},
+}
+
+M.completion = {
+	timer = vim.uv.new_timer(),
+	responses = {},
 }
 
 function M.setup(opts)
@@ -187,6 +187,7 @@ function M.completefunc(findstart, base)
 		return vim.fn.match(line:sub(1, col), "\\k*$")
 	end
 
+	-- Don't show any completion items if pattern not found
 	if base == "" then
 		return {}
 	end
@@ -291,6 +292,11 @@ function M.completefunc(findstart, base)
 				})
 			end
 		end
+	end
+
+	-- TODO we can assume that if the first item is the same as current pattern, the word is just completed (experimental)
+	if not vim.tbl_isempty(words) and words[1].word == base then
+		return {}
 	end
 
 	return words
