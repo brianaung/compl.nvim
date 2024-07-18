@@ -65,12 +65,11 @@ function M.setup(opts)
 		"Trigger auto completion."
 	)
 
-	-- TODO reenable side effects after testing experimental completion design
-	-- au(
-	-- 	"CompleteDonePre",
-	-- 	M.on_completedonepre,
-	-- 	"Additional text edits and commands to run after insert mode completion is done."
-	-- )
+	au(
+		"CompleteDonePre",
+		M.on_completedonepre,
+		"Additional text edits and commands to run after insert mode completion is done."
+	)
 end
 
 function M.start_completion()
@@ -312,14 +311,16 @@ function M.on_completedonepre()
 	local completed_word = vim.v.completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
 
+	-- TODO
 	-- No words were inserted since it is a duplicate, so set cursor to end of duplicate word
-	if completed_word == "" then
-		local replaced_word = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "replaced_word") or ""
-		vim.api.nvim_win_set_cursor(winnr, { row, col + vim.fn.strwidth(replaced_word) })
-	end
+	-- if completed_word == "" then
+	-- 	local replaced_word = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "replaced_word") or ""
+	-- 	vim.api.nvim_win_set_cursor(winnr, { row, col + vim.fn.strwidth(replaced_word) })
+	-- end
 
 	-- Expand snippet only if word is inserted, not replaced
-	if kind == "Snippet" and completed_word ~= "" then
+	-- if kind == "Snippet" and completed_word ~= "" then
+	if kind == "Snippet" then
 		vim.api.nvim_buf_set_text(bufnr, row - 1, col - vim.fn.strwidth(completed_word), row - 1, col, { "" })
 		vim.api.nvim_win_set_cursor(winnr, { row, col - vim.fn.strwidth(completed_word) })
 		vim.snippet.expand(vim.tbl_get(completion_item, "textEdit", "newText") or completion_item.insertText or "")
