@@ -27,13 +27,6 @@ end
 local M = {}
 
 M.opts = {
-	-- TODO potential improvement
-	-- Fuzzy 'false' provides a more consistent behavior with the current design because...
-	-- After the initial trigger, ins-completion-menu mechanism kicks in and take control of filtering matches as you type.
-	-- It does not use fuzzy matching.
-	-- When there are no more matches, the popup menu closes, and then custom completefunc re-triggers, assuming you keep typing.
-	-- And these results can re-include items which are previously filtered out (if fuzzy = true), which can feel inconsistent.
-	fuzzy = false,
 	completion = {
 		timeout = 100,
 	},
@@ -41,8 +34,12 @@ M.opts = {
 
 M.completion = {
 	timer = vim.uv.new_timer(),
-	status = "DONE",
 	responses = {},
+}
+
+M.context = {
+	cursor = nil,
+	pending_requests = {},
 }
 
 function M.setup(opts)
@@ -62,7 +59,7 @@ function M.setup(opts)
 	end, "Set completion function.")
 
 	au(
-		"InsertCharPre",
+		{ "InsertCharPre", "TextChangedI", "TextChangedP" },
 		debounce(M.completion.timer, M.opts.completion.timeout, M.start_completion),
 		"Trigger auto completion."
 	)
@@ -76,50 +73,33 @@ end
 
 function M.start_completion()
 	local bufnr = vim.api.nvim_get_current_buf()
+	local winnr = vim.api.nvim_get_current_win()
+	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+
+	-- Stop completion in these scenarios
 	if
-		vim.fn.pumvisible() ~= 0
-		or vim.fn.state "m" == "m"
-		or vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= ""
+		not has_lsp_clients(bufnr) -- No LSP client
+		or vim.deep_equal(M.context.cursor, { row, col }) -- Context didn't change
+		or vim.fn.complete_info()["selected"] ~= -1 -- Item is selected
+		or vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= "" -- Not a normal buffer
 	then
 		return
 	end
 
-	if has_lsp_clients(bufnr) then
-		vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
-	else
-		vim.api.nvim_feedkeys(vim.keycode "<C-x><C-n>", "m", false)
+	-- Update context
+	M.context.cursor = { row, col }
+
+	-- Cancel pending requests
+	for _, fn in ipairs(M.context.pending_requests) do
+		fn()
 	end
-end
+	M.context.pending_requests = {}
 
----Finds LSP completion words.
----
----This function fires twice everytime it's called. See :h complete-functions
----- (1) findstart = 1, base = empty -> find the start of text to be completed
----- (2) findstart = 0, base = text located in the first call -> find matches
----
----On 1st call,
----- (1) makes a request to get completion items, leave completion mode, then re-triggers completefunc.
----- (2) skipped, since function call in resetted in (1).
----On 2nd call,
----- (1) no more requests are made, it returns the start of completion.
----- (2) process responses from earlier request, then return a list of words to complete.
----
----@param findstart integer Defines how the function is called
----@param base string The text with which completion items should match
----@return integer|table # A list of matching words
-function M.completefunc(findstart, base)
-	local bufnr = vim.api.nvim_get_current_buf()
-	local winnr = vim.api.nvim_get_current_win()
-	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
-
-	-- Get completion items
-	if M.completion.status == "DONE" then
-		local position_params = vim.lsp.util.make_position_params()
-
-		M.completion.status = "SENT"
+	-- Make a request to get completion items
+	local position_params = vim.lsp.util.make_position_params()
+	table.insert(
+		M.context.pending_requests,
 		vim.lsp.buf_request_all(bufnr, "textDocument/completion", position_params, function(responses)
-			M.completion.status = "RECEIVED"
-
 			-- Apply itemDefaults to completion item as per the LSP specs:
 			--
 			-- "In many cases the items of an actual completion result share the same
@@ -154,13 +134,18 @@ function M.completefunc(findstart, base)
 					end
 				end
 			end
-
 			M.completion.responses = responses
-			M.start_completion()
-		end)
 
-		return findstart == 1 and -3 or {}
-	end
+			-- Trigger completefunc
+			vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
+		end)
+	)
+end
+
+function M.completefunc(findstart, base)
+	local bufnr = vim.api.nvim_get_current_buf()
+	local winnr = vim.api.nvim_get_current_win()
+	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
 	-- Find completion start
 	if findstart == 1 then
@@ -200,7 +185,9 @@ function M.completefunc(findstart, base)
 		return vim.fn.match(line:sub(1, col), "\\k*$")
 	end
 
-	M.completion.status = "DONE"
+	if base == "" then
+		return {}
+	end
 
 	-- Process and find completion words
 	local words = {}
@@ -212,14 +199,8 @@ function M.completefunc(findstart, base)
 			for _, item in pairs(items) do
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-				if M.opts.fuzzy then
-					if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
-						table.insert(matches, item)
-					end
-				else
-					if vim.startswith(text, base) then
-						table.insert(matches, item)
-					end
+				if vim.startswith(text, base) then
+					table.insert(matches, item)
 				end
 				-- Add extra field to check for exact matches
 				item.exact = text == base
@@ -282,9 +263,11 @@ function M.completefunc(findstart, base)
 
 				local word_to_be_replaced =
 					vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + vim.fn.strwidth(word), {})
+				local replace = vim.list_contains(word_to_be_replaced, word)
 
 				table.insert(words, {
-					word = vim.list_contains(word_to_be_replaced, word) and "" or word,
+					word = replace and "" or word,
+					equal = replace and 1 or 0,
 					abbr = item.label,
 					kind = kind,
 					icase = 1,
@@ -294,7 +277,7 @@ function M.completefunc(findstart, base)
 						nvim = {
 							lsp = { completion_item = item, client_id = client_id },
 							-- keep track of word replace to update cursor pos after completedone
-							replaced_word = vim.list_contains(word_to_be_replaced, word) and word or "",
+							replaced_word = replace and word or "",
 						},
 					},
 				})
