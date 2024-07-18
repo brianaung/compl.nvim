@@ -27,6 +27,7 @@ end
 local M = {}
 
 M.opts = {
+	fuzzy = true,
 	completion = {
 		timeout = 100,
 	},
@@ -59,16 +60,17 @@ function M.setup(opts)
 	end, "Set completion function.")
 
 	au(
-		{ "InsertCharPre", "TextChangedI", "TextChangedP" },
+		{ "TextChangedI", "TextChangedP" },
 		debounce(M.completion.timer, M.opts.completion.timeout, M.start_completion),
 		"Trigger auto completion."
 	)
 
-	au(
-		"CompleteDonePre",
-		M.on_completedonepre,
-		"Additional text edits and commands to run after insert mode completion is done."
-	)
+	-- TODO reenable side effects after testing experimental completion design
+	-- au(
+	-- 	"CompleteDonePre",
+	-- 	M.on_completedonepre,
+	-- 	"Additional text edits and commands to run after insert mode completion is done."
+	-- )
 end
 
 function M.start_completion()
@@ -199,10 +201,16 @@ function M.completefunc(findstart, base)
 			for _, item in pairs(items) do
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-				if vim.startswith(text, base) then
-					table.insert(matches, item)
+				if M.opts.fuzzy then
+					if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
+						table.insert(matches, item)
+					end
+				else
+					if vim.startswith(text, base) then
+						table.insert(matches, item)
+					end
 				end
-				-- Add extra field to check for exact matches
+				-- Add an extra custom field to mark exact matches
 				item.exact = text == base
 			end
 
@@ -267,7 +275,7 @@ function M.completefunc(findstart, base)
 
 				table.insert(words, {
 					word = replace and "" or word,
-					equal = replace and 1 or 0,
+					equal = 1, -- we will do the filtering ourselves
 					abbr = item.label,
 					kind = kind,
 					icase = 1,
