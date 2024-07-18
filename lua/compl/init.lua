@@ -92,8 +92,8 @@ function M.start_completion()
 	M.context.cursor = { row, col }
 
 	-- Cancel pending requests
-	for _, fn in ipairs(M.context.pending_requests) do
-		fn()
+	for _, cancel in ipairs(M.context.pending_requests) do
+		cancel()
 	end
 	M.context.pending_requests = {}
 
@@ -292,11 +292,6 @@ function M.completefunc(findstart, base)
 				})
 			end
 		end
-	end
-
-	-- TODO we can assume that if the first item is the same as current pattern, the word is just completed (experimental)
-	if not vim.tbl_isempty(words) and words[1].word == base then
-		return {}
 	end
 
 	return words
