@@ -77,24 +77,26 @@ function M.start_completion()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
+	-- Cancel pending requests
+	for _, cancel in ipairs(M.context.pending_requests) do
+		cancel()
+	end
+	M.context.pending_requests = {}
+
 	-- Stop completion in these scenarios
 	if
 		not has_lsp_clients(bufnr) -- No LSP client
 		or vim.deep_equal(M.context.cursor, { row, col }) -- Context didn't change
 		or vim.fn.complete_info()["selected"] ~= -1 -- Item is selected
 		or vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= "" -- Not a normal buffer
+		or vim.fn.mode() ~= "i" -- Not in insert mode
+		or vim.fn.state "m" == "m" -- Halfway a mapping
 	then
 		return
 	end
 
 	-- Update context
 	M.context.cursor = { row, col }
-
-	-- Cancel pending requests
-	for _, cancel in ipairs(M.context.pending_requests) do
-		cancel()
-	end
-	M.context.pending_requests = {}
 
 	-- Make a request to get completion items
 	local position_params = vim.lsp.util.make_position_params()
@@ -137,8 +139,10 @@ function M.start_completion()
 			end
 			M.completion.responses = responses
 
-			-- Trigger completefunc
-			vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
+			-- Trigger completefunc (add extra check again to feedkey only in insert mode)
+			if vim.fn.mode() == "i" then
+				vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
+			end
 		end)
 	)
 end
@@ -283,9 +287,11 @@ function M.completefunc(findstart, base)
 					empty = 1,
 					user_data = {
 						nvim = {
-							lsp = { completion_item = item, client_id = client_id },
-							-- keep track of word replace to update cursor pos after completedone
-							replaced_word = replace and word or "",
+							lsp = {
+								completion_item = item,
+								client_id = client_id,
+								replace = replace and word or "",
+							},
 						},
 					},
 				})
@@ -311,18 +317,16 @@ function M.on_completedonepre()
 	local completed_word = vim.v.completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
 
-	-- TODO
 	-- No words were inserted since it is a duplicate, so set cursor to end of duplicate word
-	-- if completed_word == "" then
-	-- 	local replaced_word = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "replaced_word") or ""
-	-- 	vim.api.nvim_win_set_cursor(winnr, { row, col + vim.fn.strwidth(replaced_word) })
-	-- end
+	if completed_word == "" then
+		local replace = vim.tbl_get(lsp_data, "replace") or ""
+		pcall(vim.api.nvim_win_set_cursor, winnr, { row, col + vim.fn.strwidth(replace) })
+	end
 
-	-- Expand snippet only if word is inserted, not replaced
-	-- if kind == "Snippet" and completed_word ~= "" then
+	-- Expand snippets
 	if kind == "Snippet" then
-		vim.api.nvim_buf_set_text(bufnr, row - 1, col - vim.fn.strwidth(completed_word), row - 1, col, { "" })
-		vim.api.nvim_win_set_cursor(winnr, { row, col - vim.fn.strwidth(completed_word) })
+		pcall(vim.api.nvim_buf_set_text, bufnr, row - 1, col - vim.fn.strwidth(completed_word), row - 1, col, { "" })
+		pcall(vim.api.nvim_win_set_cursor, winnr, { row, col - vim.fn.strwidth(completed_word) })
 		vim.snippet.expand(vim.tbl_get(completion_item, "textEdit", "newText") or completion_item.insertText or "")
 	end
 
@@ -339,7 +343,6 @@ function M.on_completedonepre()
 		client.request("completionItem/resolve", completion_item, function(err, result)
 			edits = (not err) and (result.additionalTextEdits or {}) or {}
 			if not vim.tbl_isempty(edits) then
-				-- vim.cmd [[silent! undojoin]]
 				vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
 			end
 		end)

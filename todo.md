@@ -1,3 +1,0 @@
-- [ ] Apply additional text edits asynchronously.
-- [ ] Ability to trigger completion request of every key stroke without redrawing pmenu.
-    - [ ] Or find another way to get the latest 'base' value.
