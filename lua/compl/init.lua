@@ -149,8 +149,8 @@ end
 
 function M.completefunc(findstart, base)
 	local bufnr = vim.api.nvim_get_current_buf()
-	local winnr = vim.api.nvim_get_current_win()
-	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+	local row, col = unpack(M.context.cursor)
+	local line = vim.api.nvim_get_current_line()
 
 	-- Find completion start
 	if findstart == 1 then
@@ -186,13 +186,13 @@ function M.completefunc(findstart, base)
 		end
 
 		-- Fallback to client start (if completion item does not provide text edits)
-		local line = vim.api.nvim_get_current_line()
 		return vim.fn.match(line:sub(1, col), "\\k*$")
 	end
 
-	-- Don't show any completion items if pattern not found
-	if base == "" then
-		return {}
+	-- Char before cursor is a whitespace, so don't show any completion items
+	local before_char = line:sub(col, col + 1)
+	if vim.fn.match(before_char, "\\s") ~= -1 then
+		return
 	end
 
 	-- Process and find completion words
@@ -206,7 +206,8 @@ function M.completefunc(findstart, base)
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
 				if M.opts.fuzzy then
-					if vim.startswith(text, base:sub(1, 1)) and next(vim.fn.matchfuzzy({ text }, base)) then
+					local fuzzy = vim.fn.matchfuzzy({ text }, base)
+					if vim.startswith(text, base:sub(1, 1)) and (base == "" or next(fuzzy)) then
 						table.insert(matches, item)
 					end
 				else
