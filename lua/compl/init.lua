@@ -274,9 +274,8 @@ function M.completefunc(findstart, base)
 					word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
 				end
 
-				local word_to_be_replaced =
-					vim.api.nvim_buf_get_text(bufnr, row - 1, col, row - 1, col + vim.fn.strwidth(word), {})
-				local replace = vim.list_contains(word_to_be_replaced, word)
+				local word_to_be_replaced = line:sub(col, col + vim.fn.strwidth(word) - 1)
+				local replace = word_to_be_replaced == word
 
 				table.insert(words, {
 					word = replace and "" or word,
