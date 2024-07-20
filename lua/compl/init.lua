@@ -148,9 +148,21 @@ function M.start_completion()
 end
 
 function M.completefunc(findstart, base)
-	local bufnr = vim.api.nvim_get_current_buf()
-	local row, col = unpack(M.context.cursor)
 	local line = vim.api.nvim_get_current_line()
+	local winnr = vim.api.nvim_get_current_win()
+	local _, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+	local _, context_col = unpack(M.context.cursor)
+
+	-- Item is recently completed
+	if not vim.tbl_isempty(vim.v.completed_item) then
+		return
+	end
+
+	-- Char before cursor is a whitespace, so don't show any completion items
+	local before_char = line:sub(context_col, context_col + 1)
+	if vim.fn.match(before_char, "\\s") ~= -1 then
+		return
+	end
 
 	-- Find completion start
 	if findstart == 1 then
@@ -187,12 +199,6 @@ function M.completefunc(findstart, base)
 
 		-- Fallback to client start (if completion item does not provide text edits)
 		return vim.fn.match(line:sub(1, col), "\\k*$")
-	end
-
-	-- Char before cursor is a whitespace, so don't show any completion items
-	local before_char = line:sub(col, col + 1)
-	if vim.fn.match(before_char, "\\s") ~= -1 then
-		return
 	end
 
 	-- Process and find completion words
@@ -274,7 +280,7 @@ function M.completefunc(findstart, base)
 					word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
 				end
 
-				local word_to_be_replaced = line:sub(col, col + vim.fn.strwidth(word) - 1)
+				local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
 				local replace = word_to_be_replaced == word
 
 				table.insert(words, {
