@@ -153,16 +153,16 @@ function M.completefunc(findstart, base)
 	local _, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 	local _, context_col = unpack(M.context.cursor)
 
-	-- Item is recently completed
-	if not vim.tbl_isempty(vim.v.completed_item) then
-		return
-	end
-
-	-- Char before cursor is a whitespace, so don't show any completion items
-	local before_char = line:sub(context_col, context_col + 1)
-	if vim.fn.match(before_char, "\\s") ~= -1 then
-		return
-	end
+	-- -- Item is recently completed
+	-- if not vim.tbl_isempty(vim.v.completed_item) then
+	-- 	return
+	-- end
+	--
+	-- -- Char before cursor is a whitespace, so don't show any completion items
+	-- local before_char = line:sub(context_col, context_col + 1)
+	-- if vim.fn.match(before_char, "\\s") ~= -1 then
+	-- 	return
+	-- end
 
 	-- Find completion start
 	if findstart == 1 then
