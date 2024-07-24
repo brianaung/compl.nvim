@@ -31,6 +31,9 @@ M.opts = {
 	completion = {
 		timeout = 100,
 	},
+	info = {
+		timeout = 200,
+	},
 }
 
 M.context = {
@@ -41,6 +44,12 @@ M.context = {
 M.completion = {
 	timer = vim.uv.new_timer(),
 	responses = {},
+}
+
+M.info = {
+	timer = vim.uv.new_timer(),
+	bufnr = 0,
+	winids = {},
 }
 
 function M.setup(opts)
@@ -55,6 +64,10 @@ function M.setup(opts)
 	opts = opts or {}
 	M.opts = vim.tbl_deep_extend("force", M.opts, opts)
 
+	M.info.bufnr = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_name(M.info.bufnr, "Compl:InfoWindow")
+	vim.fn.setbufvar(M.info.bufnr, "&buftype", "nofile")
+
 	au({ "BufEnter", "LspAttach" }, function(e)
 		vim.bo[e.buf].completefunc = "v:lua.Completefunc"
 	end, "Set completion function.")
@@ -66,10 +79,20 @@ function M.setup(opts)
 	)
 
 	au(
+		"CompleteChanged",
+		debounce(M.info.timer, M.opts.info.timeout, M.start_info),
+		"Show extra documentation info in a separate window."
+	)
+
+	au(
 		"CompleteDonePre",
 		M.on_completedonepre,
 		"Additional text edits and commands to run after insert mode completion is done."
 	)
+
+	au("InsertLeavePre", function()
+		M.close_info()
+	end, "Close any opened info windows when leaving insert mode.")
 end
 
 function M.start_completion()
@@ -77,7 +100,7 @@ function M.start_completion()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
-	-- Cancel pending requests
+	-- Cancel pending completion requests
 	for _, cancel in ipairs(M.context.pending_requests) do
 		cancel()
 	end
@@ -306,6 +329,87 @@ function M.completefunc(findstart, base)
 	end
 
 	return words
+end
+
+function M.start_info()
+	M.close_info()
+
+	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
+	local completion_item = lsp_data.completion_item or {}
+	if vim.tbl_isempty(completion_item) then
+		return
+	end
+
+	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
+
+	local documentation
+	if type(completion_item.documentation) == "string" then
+		documentation = completion_item.documentation
+		M.show_info(documentation)
+	elseif vim.tbl_get(completion_item.documentation or {}, "value") then
+		documentation = vim.tbl_get(completion_item.documentation, "value")
+		M.show_info(documentation)
+	else
+		client.request("completionItem/resolve", completion_item, function(err, result)
+			if not err and result then
+				if type(result.documentation) == "string" then
+					documentation = result.documentation
+				elseif vim.tbl_get(result.documentation or {}, "value") then
+					documentation = vim.tbl_get(result.documentation, "value")
+				end
+				if documentation then
+					M.show_info(documentation)
+				end
+			end
+		end)
+	end
+end
+
+function M.show_info(documentation)
+	local lines = vim.lsp.util.convert_input_to_markdown_lines(documentation)
+	local pumpos = vim.fn.pum_getpos()
+
+	if not vim.tbl_isempty(lines) and not vim.tbl_isempty(pumpos) then
+		-- Convert lines into syntax highlighted regions and set it in the buffer
+		vim.lsp.util.stylize_markdown(M.info.bufnr, lines)
+
+		local pum_left = pumpos.col - 1
+		local pum_right = pumpos.col + pumpos.width + (pumpos.scrollbar and 1 or 0)
+		local space_left = pum_left
+		local space_right = vim.o.columns - pum_right
+
+		-- Choose the side to open win
+		local anchor, col, space = "NW", pum_right, space_right
+		if space_right < space_left then
+			anchor, col, space = "NE", pum_left, space_left
+		end
+
+		-- Calculate width (can grow to full space) and height
+		local line_range = vim.api.nvim_buf_get_lines(M.info.bufnr, 0, -1, false)
+		local width, height = vim.lsp.util._make_floating_popup_size(line_range, { max_width = space })
+
+		local win_opts = {
+			relative = "editor",
+			anchor = anchor,
+			row = pumpos.row,
+			col = col,
+			width = width,
+			height = height,
+			focusable = false,
+			style = "minimal",
+			border = "none",
+		}
+
+		table.insert(M.info.winids, vim.api.nvim_open_win(M.info.bufnr, false, win_opts))
+	end
+end
+
+function M.close_info()
+	for idx, winid in ipairs(M.info.winids) do
+		if pcall(vim.api.nvim_win_close, winid, false) then
+			M.info.winids[idx] = nil
+		end
+	end
 end
 
 function M.on_completedonepre()

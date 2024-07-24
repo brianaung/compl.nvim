@@ -10,6 +10,7 @@ WIP =)
 - Basic snippet expansion support
 - Apply additional text edits (e.g. auto-imports)
 - Improved sorting relevancy
+- Displays info window
 
 ## Non-goals
 - Multiple completion sources
