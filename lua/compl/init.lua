@@ -351,31 +351,42 @@ function M.start_info()
 
 	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
 
-	local documentation
-	if type(completion_item.documentation) == "string" then
-		documentation = completion_item.documentation
-		M.show_info(documentation)
-	elseif vim.tbl_get(completion_item.documentation or {}, "value") then
-		documentation = vim.tbl_get(completion_item.documentation, "value")
-		M.show_info(documentation)
+	-- get resolved item only if item does not already contain documentation
+	if completion_item.documentation then
+		M.show_info(completion_item)
 	else
 		client.request("completionItem/resolve", completion_item, function(err, result)
-			if not err and result then
-				if type(result.documentation) == "string" then
-					documentation = result.documentation
-				elseif vim.tbl_get(result.documentation or {}, "value") then
-					documentation = vim.tbl_get(result.documentation, "value")
-				end
-				if documentation then
-					M.show_info(documentation)
-				end
+			if not err and result.documentation then
+				M.show_info(result)
 			end
 		end)
 	end
 end
 
-function M.show_info(documentation)
-	local lines = vim.lsp.util.convert_input_to_markdown_lines(documentation)
+function M.show_info(item)
+	local detail = item.detail or ""
+
+	local documentation
+	if type(item.documentation) == "string" then
+		documentation = item.documentation or ""
+	else
+		documentation = vim.tbl_get(item.documentation or {}, "value") or ""
+	end
+
+	if documentation == "" and detail == "" then
+		return
+	end
+
+	local input
+	if detail == "" then
+		input = documentation
+	elseif documentation == "" then
+		input = detail
+	else
+		input = detail .. "\n" .. documentation
+	end
+
+	local lines = vim.lsp.util.convert_input_to_markdown_lines(input)
 	local pumpos = vim.fn.pum_getpos()
 
 	if not vim.tbl_isempty(lines) and not vim.tbl_isempty(pumpos) then
