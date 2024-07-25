@@ -27,7 +27,7 @@ end
 local M = {}
 
 M.opts = {
-	fuzzy = true,
+	fuzzy = false,
 	completion = {
 		timeout = 100,
 	},
