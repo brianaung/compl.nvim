@@ -58,11 +58,20 @@ function M.setup(opts)
 		return
 	end
 
-	_G.Completefunc = M.completefunc
-
 	-- apply user configuration options
 	opts = opts or {}
 	M.opts = vim.tbl_deep_extend("force", M.opts, opts)
+
+	-- ensure the user provides correct configs
+	vim.validate {
+		["fuzzy"] = { M.opts.fuzzy, "b" },
+		["completion"] = { M.opts.completion, "t" },
+		["completion.timeout"] = { M.opts.completion.timeout, "n" },
+		["info"] = { M.opts.info, "t" },
+		["info.timeout"] = { M.opts.info.timeout, "n" },
+	}
+
+	_G.Completefunc = M.completefunc
 
 	M.info.bufnr = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_name(M.info.bufnr, "Compl:InfoWindow")
