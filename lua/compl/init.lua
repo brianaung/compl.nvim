@@ -108,6 +108,8 @@ function M.start_completion()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+	local line = vim.api.nvim_get_current_line()
+	local before_char = line:sub(col, col + 1)
 
 	-- Cancel pending completion requests
 	for _, cancel in ipairs(M.context.pending_requests) do
@@ -115,20 +117,34 @@ function M.start_completion()
 	end
 	M.context.pending_requests = {}
 
+	-- stylua: ignore start
 	-- Stop completion in these scenarios
-	if
-		not has_lsp_clients(bufnr) -- No LSP client
-		or vim.deep_equal(M.context.cursor, { row, col }) -- Context didn't change
-		or vim.fn.complete_info()["selected"] ~= -1 -- Item is selected
-		or vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= "" -- Not a normal buffer
-		or vim.fn.mode() ~= "i" -- Not in insert mode
-		or vim.fn.state "m" == "m" -- Halfway a mapping
-	then
-		return
-	end
-
-	-- Update context
+	-- Context didn't change
+	if vim.deep_equal(M.context.cursor, { row, col }) then return end
+	-- if it does, it needs to be updated immediately after
 	M.context.cursor = { row, col }
+
+	-- No LSP client
+	if not has_lsp_clients(bufnr) then return end
+
+	-- Not a normal buffer
+	if vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= "" then return end
+
+	-- Not in insert mode
+	if vim.fn.mode() ~= "i" then return end
+
+	-- Halfway a mapping
+	if vim.fn.state "m" == "m" then return end
+
+	-- Item is selected
+	if vim.fn.complete_info()["selected"] ~= -1 then return end
+
+	-- Cursor is at the beginning
+	if col == 0 then return end
+
+	-- Char before cursor is a whitespace
+	if vim.fn.match(before_char, "\\s") ~= -1 then return end
+	-- stylua: ignore end
 
 	-- Make a request to get completion items
 	local position_params = vim.lsp.util.make_position_params()
@@ -171,7 +187,7 @@ function M.start_completion()
 			end
 			M.completion.responses = responses
 
-			-- Trigger completefunc (add extra check again to feedkey only in insert mode)
+			-- Trigger completefunc (add insert mode check again since this callback is async)
 			if vim.fn.mode() == "i" then
 				vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
 			end
@@ -183,18 +199,6 @@ function M.completefunc(findstart, base)
 	local line = vim.api.nvim_get_current_line()
 	local winnr = vim.api.nvim_get_current_win()
 	local _, col = unpack(vim.api.nvim_win_get_cursor(winnr))
-	local _, context_col = unpack(M.context.cursor)
-
-	-- -- Item is recently completed
-	-- if not vim.tbl_isempty(vim.v.completed_item) then
-	-- 	return
-	-- end
-	--
-	-- -- Char before cursor is a whitespace, so don't show any completion items
-	-- local before_char = line:sub(context_col, context_col + 1)
-	-- if vim.fn.match(before_char, "\\s") ~= -1 then
-	-- 	return
-	-- end
 
 	-- Find completion start
 	if findstart == 1 then
@@ -433,6 +437,8 @@ function M.close_info()
 end
 
 function M.on_completedonepre()
+	M.close_info()
+
 	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
 	local completion_item = lsp_data.completion_item or {}
 	if vim.tbl_isempty(completion_item) then
