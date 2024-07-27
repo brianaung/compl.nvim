@@ -450,6 +450,9 @@ function M.on_completedonepre()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
+	-- Update context cursor so completion is not triggered right after complete done.
+	M.context.cursor = { row, col }
+
 	local completed_word = vim.v.completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
 
