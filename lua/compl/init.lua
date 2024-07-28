@@ -23,21 +23,20 @@ M.opts = {
 	},
 }
 
-M.context = {
+M.ctx = {
 	cursor = nil,
+	pending_requests = {},
+	cancel_pending = function()
+		for _, cancel_fn in ipairs(M.ctx.pending_requests) do
+			cancel_fn()
+		end
+		M.ctx.pending_requests = {}
+	end,
 }
 
 M.completion = {
 	timer = vim.uv.new_timer(),
 	responses = {},
-	pending_requests = {},
-	-- Cancel pending completion requests
-	cancel_pending = function()
-		for _, cancel in ipairs(M.completion.pending_requests) do
-			cancel()
-		end
-		M.completion.pending_requests = {}
-	end,
 }
 
 M.info = {
@@ -102,16 +101,18 @@ function M.setup(opts)
 	vim.api.nvim_create_autocmd({ "InsertLeavePre", "InsertLeave" }, {
 		group = group,
 		callback = function()
+			M.ctx.cancel_pending()
+
 			M.completion.timer:stop()
-			M.completion.cancel_pending()
 			M.info.timer:stop()
+
 			M.info.close_windows()
 		end,
 	})
 end
 
 function M.trigger_completion()
-	M.completion.cancel_pending()
+	M.ctx.cancel_pending()
 
 	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
@@ -131,13 +132,13 @@ function M.trigger_completion()
 		-- Char before cursor is a whitespace
 		or vim.fn.match(before_char, "\\s") ~= -1
 		-- Context didn't change
-		or vim.deep_equal(M.context.cursor, { row, col })
+		or vim.deep_equal(M.ctx.cursor, { row, col })
 	then
-		M.context.cursor = { row, col }
+		M.ctx.cursor = { row, col }
 		-- Do not trigger completion
 		return
 	end
-	M.context.cursor = { row, col }
+	M.ctx.cursor = { row, col }
 
 	-- Make a request to get completion items
 	local position_params = vim.lsp.util.make_position_params()
@@ -182,7 +183,7 @@ function M.trigger_completion()
 			vim.api.nvim_feedkeys(vim.keycode "<C-x><C-u>", "m", false)
 		end
 	end)
-	table.insert(M.completion.pending_requests, cancel_fn)
+	table.insert(M.ctx.pending_requests, cancel_fn)
 end
 
 function M.completefunc(findstart, base)
@@ -336,6 +337,7 @@ end
 
 function M.trigger_info()
 	M.info.close_windows()
+	M.ctx.cancel_pending()
 
 	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
 	local completion_item = lsp_data.completion_item or {}
@@ -349,11 +351,19 @@ function M.trigger_info()
 	if completion_item.documentation then
 		M.open_info_window(completion_item)
 	else
-		client.request("completionItem/resolve", completion_item, function(err, result)
+		local ok, request_id = client.request("completionItem/resolve", completion_item, function(err, result)
 			if not err and result.documentation then
 				M.open_info_window(result)
 			end
 		end)
+		if ok then
+			local cancel_fn = function()
+				if client then
+					client.cancel_request(request_id)
+				end
+			end
+			table.insert(M.ctx.pending_requests, cancel_fn)
+		end
 	end
 end
 
@@ -433,7 +443,7 @@ function M.on_completedone()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 
 	-- Update context cursor so completion is not triggered right after complete done.
-	M.context.cursor = { row, col }
+	M.ctx.cursor = { row, col }
 
 	local completed_word = vim.v.completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
@@ -461,12 +471,20 @@ function M.on_completedone()
 		-- 1. Insert newline(s) right after completing an item without exiting insert mode.
 		-- 2. Undo changes.
 		-- Result: Completed item is not removed without the undo changes.
-		client.request("completionItem/resolve", completion_item, function(err, result)
+		local ok, request_id = client.request("completionItem/resolve", completion_item, function(err, result)
 			edits = (not err) and (result.additionalTextEdits or {}) or {}
 			if not vim.tbl_isempty(edits) then
 				vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
 			end
 		end)
+		if ok then
+			local cancel_fn = function()
+				if client then
+					client.cancel_request(request_id)
+				end
+			end
+			table.insert(M.ctx.pending_requests, cancel_fn)
+		end
 	end
 end
 
