@@ -19,7 +19,7 @@ M.opts = {
 		timeout = 100,
 	},
 	info = {
-		timeout = 200,
+		timeout = 100,
 	},
 }
 
