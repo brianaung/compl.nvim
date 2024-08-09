@@ -118,7 +118,7 @@ function M.trigger_completion()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
 	local line = vim.api.nvim_get_current_line()
-	local before_char = line:sub(col, col + 1)
+	local before_char = line:sub(col, col)
 
 	if
 		-- No LSP clients
