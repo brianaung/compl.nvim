@@ -1,9 +1,9 @@
 # compl.nvim
-A minimal and dependency-free auto-completion plugin built on top of vim's ins-completion mechanism.
+A minimal and dependency-free auto-completion plugin built on top of Vim's ins-completion mechanism.
 
 ## Features
 - Asynchronous auto completion with a custom debounce
-- Vim's Snippet expansion support
+- Supports Neovim's native snippet expansion (See `:h vim.snippet.expand()`)
 - Ability to apply additional text edits (e.g. auto-imports)
 - Dynamic sorting of completion items
 - Fuzzy matching capabilities
