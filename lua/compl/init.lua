@@ -122,7 +122,7 @@ function M.trigger_completion()
 
 	if
 		-- No LSP clients
-		next(vim.lsp.get_clients { bufnr = bufnr, method = "textDocument/completion" }) == nil
+		not next(vim.lsp.get_clients { bufnr = bufnr, method = "textDocument/completion" })
 		-- Not a normal buffer
 		or vim.api.nvim_get_option_value("buftype", { buf = bufnr }) ~= ""
 		-- Item is selected
@@ -346,6 +346,9 @@ function M.trigger_info()
 	end
 
 	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
+	if not client then
+		return
+	end
 
 	-- get resolved item only if item does not already contain documentation
 	if completion_item.documentation then
@@ -444,6 +447,10 @@ function M.on_completedone()
 
 	-- Update context cursor so completion is not triggered right after complete done.
 	M.ctx.cursor = { row, col }
+
+	if not client then
+		return
+	end
 
 	local completed_word = vim.v.completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
