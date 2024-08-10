@@ -1,19 +1,31 @@
 {
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  };
+  description = "Development environment with Lua and related tools.";
 
-  outputs = { self, nixpkgs, ... } @ inputs:
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+  outputs =
+    { self, nixpkgs }:
     let
-      pkgs = nixpkgs.legacyPackages.x86_64-linux.pkgs;
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+
+      forAllSystems =
+        function: nixpkgs.lib.genAttrs systems (system: function nixpkgs.legacyPackages.${system});
     in
     {
-      devShells.x86_64-linux.default = pkgs.mkShell {
-        buildInputs = with pkgs; [
-          nil
-          lua-language-server
-          stylua
-        ];
-      };
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            nil
+            lua-language-server
+            stylua
+          ];
+        };
+      });
+
     };
 }
