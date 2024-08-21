@@ -28,7 +28,7 @@ M.ctx = {
 	pending_requests = {},
 	cancel_pending = function()
 		for _, cancel_fn in ipairs(M.ctx.pending_requests) do
-			cancel_fn()
+			pcall(cancel_fn)
 		end
 		M.ctx.pending_requests = {}
 	end,
