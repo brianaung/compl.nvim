@@ -258,12 +258,18 @@ function M.completefunc(findstart, base)
 			table.sort(matches, function(a, b)
 				-- Sort by exact matches
 				if a.exact ~= b.exact then
-					return a.exact
+					return a.exact or false -- nil should return false
 				end
 
 				-- Sort by ordinal value of 'kind'.
 				-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
 				if a.kind ~= b.kind then
+					if not a.kind then
+						return false
+					end
+					if not b.kind then
+						return true
+					end
 					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
 						return true
 					end
@@ -285,7 +291,13 @@ function M.completefunc(findstart, base)
 				end
 
 				-- Sort by lexicographical order of 'sortText'.
-				if a.sortText and b.sortText then
+				if a.sortText ~= b.sortText then
+					if not a.sortText then
+						return false
+					end
+					if not b.sortText then
+						return true
+					end
 					local diff = vim.stricmp(a.sortText, b.sortText)
 					if diff < 0 then
 						return true
@@ -295,7 +307,17 @@ function M.completefunc(findstart, base)
 				end
 
 				-- Sort by length
-				return #a.label < #b.label
+				if a.label ~= b.label then
+					if not a.label then
+						return false
+					end
+					if not b.label then
+						return true
+					end
+					return #a.label < #b.label
+				end
+
+				return true
 			end)
 
 			for _, item in ipairs(matches) do
