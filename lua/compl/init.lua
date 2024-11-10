@@ -1,5 +1,8 @@
-local vim = vim
+local jit = jit
+local package = package
+local pcall = pcall
 local unpack = unpack
+local vim = vim
 
 -- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L21
 local sep = (function()
@@ -25,19 +28,8 @@ local function debounce(timer, timeout, callback)
 	end
 end
 
--- https://github.com/L3MON4D3/LuaSnip/blob/master/lua/luasnip/util/path.lua#L47
-local function read_file(path)
-	-- permissions: rrr
-	local fd = assert(vim.uv.fs_open(path, "r", tonumber("0444", 8)))
-	local stat = assert(vim.uv.fs_fstat(fd))
-	-- read from offset 0.
-	local buf = assert(vim.uv.fs_read(fd, stat.size, 0))
-	vim.uv.fs_close(fd)
-
-	return buf
-end
-
 -- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L755
+-- TODO error handling
 local function read_async(file, callback)
 	vim.uv.fs_open(file, "r", 438, function(err_open, fd)
 		-- assert(not err_open, err_open)
