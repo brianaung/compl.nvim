@@ -29,23 +29,35 @@ local function debounce(timer, timeout, callback)
 end
 
 -- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L755
--- TODO error handling
-local function read_async(file, callback)
+local function async_read(file, callback)
 	vim.uv.fs_open(file, "r", 438, function(err_open, fd)
-		-- assert(not err_open, err_open)
+		assert(not err_open, err_open)
 		vim.uv.fs_fstat(fd, function(err_fstat, stat)
-			-- assert(not err_fstat, err_fstat)
+			assert(not err_fstat, err_fstat)
 			if stat.type ~= "file" then
 				return callback ""
 			end
 			vim.uv.fs_read(fd, stat.size, 0, function(err_read, data)
-				-- assert(not err_read, err_read)
+				assert(not err_read, err_read)
 				vim.uv.fs_close(fd, function(err_close)
-					-- assert(not err_close, err_close)
+					assert(not err_close, err_close)
 					return callback(data)
 				end)
 			end)
 		end)
+	end)
+end
+
+local function async_read_json(file, callback)
+	async_read(file, function(buffer)
+		local success, data = pcall(vim.json.decode, buffer)
+		if not success then
+			vim.schedule(function()
+				vim.notify(string.format("compl.nvim: Could not decode json file %s", file), vim.log.levels.ERROR)
+			end)
+			return
+		end
+		callback(data)
 	end)
 end
 
@@ -59,11 +71,7 @@ M.opts = {
 	info = {
 		timeout = 100,
 	},
-	snippet = {
-		manifest_paths = {
-			vim.fn.stdpath "data" .. "/lazy/friendly-snippets",
-		},
-	},
+	snippet = { paths = {} },
 }
 
 M.ctx = {
@@ -102,7 +110,7 @@ M.snippet = {
 
 function M.setup(opts)
 	if vim.fn.has "nvim-0.10" ~= 1 then
-		vim.notify("compl.nvim: requires nvim-0.10 or higher.", vim.log.levels.ERROR)
+		vim.notify("compl.nvim: Requires nvim-0.10 or higher.", vim.log.levels.ERROR)
 		return
 	end
 
@@ -161,7 +169,7 @@ function M.setup(opts)
 	-- Start custom snippets lsp server
 	vim.api.nvim_create_autocmd("BufEnter", {
 		group = group,
-		callback = M.start_snippets,
+		callback = M.start_snippet,
 	})
 end
 
@@ -370,8 +378,6 @@ function M.completefunc(findstart, base)
 					end
 					return #a.label < #b.label
 				end
-
-				return true
 			end)
 
 			for _, item in ipairs(matches) do
@@ -571,7 +577,7 @@ function M.on_completedone()
 	end
 end
 
-function M.start_snippets()
+function M.start_snippet()
 	local filetype = vim.bo.filetype
 
 	if M.snippet.client_id then
@@ -580,46 +586,40 @@ function M.start_snippets()
 		M.snippet.data = {}
 	end
 
-	for _, dirpath in ipairs(M.opts.snippet.manifest_paths) do
+	for _, dirpath in ipairs(M.opts.snippet.paths) do
 		local manifest_path = table.concat({ dirpath, "package.json" }, sep)
-
-		read_async(manifest_path, function(manifest_buffer)
-			local success_manifest_decode, manifest_data = pcall(vim.json.decode, manifest_buffer)
-			if not (success_manifest_decode and manifest_data.contributes and manifest_data.contributes.snippets) then
-				-- TODO log err
+		async_read_json(manifest_path, function(manifest_data)
+			if not (manifest_data.contributes and manifest_data.contributes.snippets) then
 				return
 			end
-			for _, snippet_contribute in ipairs(manifest_data.contributes.snippets) do
-				local languages = type(snippet_contribute.language) == "table" and snippet_contribute.language
-					or { snippet_contribute.language }
 
-				if vim.tbl_contains(languages, filetype) then
-					local snippet_path = vim.fn.resolve(table.concat({ dirpath, snippet_contribute.path }, sep))
-					read_async(snippet_path, function(snippet_buffer)
-						local success_snippet_decode, snippet_data = pcall(vim.json.decode, snippet_buffer)
-						if not success_snippet_decode then
-							-- TODO log err
-							return
+			-- Filter snips for other filetypes
+			local snippet_contributes = vim.tbl_filter(function(s)
+				return type(s.language) == "table" and vim.tbl_contains(s.language, filetype) or s.language == filetype
+			end, manifest_data.contributes.snippets)
+
+			for _, snippet_contribute in ipairs(snippet_contributes) do
+				local snippet_path = vim.fn.resolve(table.concat({ dirpath, snippet_contribute.path }, sep))
+				async_read_json(snippet_path, function(snippet_data)
+					for _, snippet in pairs(snippet_data) do
+						local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
+						local insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n")
+							or snippet.body
+						for _, prefix in ipairs(prefixes) do
+							table.insert(M.snippet.items, {
+								detail = "snippet",
+								label = prefix,
+								kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
+								documentation = {
+									value = snippet.description,
+									kind = vim.lsp.protocol.MarkupKind.Markdown,
+								},
+								insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
+								insertText = insertText,
+							})
 						end
-						for _, snippet in pairs(snippet_data) do
-							local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
-							for _, prefix in ipairs(prefixes) do
-								table.insert(M.snippet.items, {
-									detail = "snippet",
-									label = prefix,
-									kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
-									documentation = {
-										value = snippet.description,
-										kind = vim.lsp.protocol.MarkupKind.Markdown,
-									},
-									insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
-									insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n")
-										or snippet.body,
-								})
-							end
-						end
-					end)
-				end
+					end
+				end)
 			end
 		end)
 	end
