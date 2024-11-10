@@ -292,126 +292,130 @@ function M.completefunc(findstart, base)
 
 	-- Process and find completion words
 	local words = {}
+	local matches = {}
 	for client_id, response in pairs(M.completion.responses) do
 		if not response.err and response.result then
 			local items = response.result.items or response.result or {}
 
-			local matches = {}
 			for _, item in pairs(items) do
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
 				if M.opts.fuzzy then
 					local fuzzy = vim.fn.matchfuzzy({ text }, base)
 					if vim.startswith(text, base:sub(1, 1)) and (base == "" or next(fuzzy)) then
-						table.insert(matches, item)
+						table.insert(matches, { client_id, item })
 					end
 				else
 					if vim.startswith(text, base) then
-						table.insert(matches, item)
+						table.insert(matches, { client_id = client_id, item = item })
 					end
 				end
 				-- Add an extra custom field to mark exact matches
 				item.exact = text == base
 			end
+		end
+	end
 
-			-- Sorting is done with multiple fallbacks.
-			-- If it fails to find diff in each stage, it will then fallback to the next stage.
-			-- https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/compare.lua
-			table.sort(matches, function(a, b)
-				-- Sort by exact matches
-				if a.exact ~= b.exact then
-					return a.exact or false -- nil should return false
-				end
+	-- Sorting is done with multiple fallbacks.
+	-- If it fails to find diff in each stage, it will then fallback to the next stage.
+	-- https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/compare.lua
+	table.sort(matches, function(a, b)
+		a, b = a.item, b.item
 
-				-- Sort by ordinal value of 'kind'.
-				-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
-				if a.kind ~= b.kind then
-					if not a.kind then
-						return false
-					end
-					if not b.kind then
-						return true
-					end
-					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
-						return true
-					end
-					if vim.lsp.protocol.CompletionItemKind[b.kind] == "Snippet" then
-						return false
-					end
-					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" then
-						return false
-					end
-					if vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" then
-						return true
-					end
-					local diff = a.kind - b.kind
-					if diff < 0 then
-						return true
-					elseif diff > 0 then
-						return false
-					end
-				end
+		-- Sort by exact matches
+		if a.exact ~= b.exact then
+			return a.exact or false -- nil should return false
+		end
 
-				-- Sort by lexicographical order of 'sortText'.
-				if a.sortText ~= b.sortText then
-					if not a.sortText then
-						return false
-					end
-					if not b.sortText then
-						return true
-					end
-					local diff = vim.stricmp(a.sortText, b.sortText)
-					if diff < 0 then
-						return true
-					elseif diff > 0 then
-						return false
-					end
-				end
-
-				-- Sort by length
-				if a.label ~= b.label then
-					if not a.label then
-						return false
-					end
-					if not b.label then
-						return true
-					end
-					return #a.label < #b.label
-				end
-			end)
-
-			for _, item in ipairs(matches) do
-				local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
-				local word
-				if kind == "Snippet" then
-					word = item.label or ""
-				else
-					word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
-				end
-
-				local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
-				local replace = word_to_be_replaced == word
-
-				table.insert(words, {
-					word = replace and "" or word,
-					equal = 1, -- we will do the filtering ourselves
-					abbr = item.label,
-					kind = kind,
-					icase = 1,
-					dup = 1,
-					empty = 1,
-					user_data = {
-						nvim = {
-							lsp = {
-								completion_item = item,
-								client_id = client_id,
-								replace = replace and word or "",
-							},
-						},
-					},
-				})
+		-- Sort by ordinal value of 'kind'.
+		-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
+		if a.kind ~= b.kind then
+			if not a.kind then
+				return false
+			end
+			if not b.kind then
+				return true
+			end
+			if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
+				return true
+			end
+			if vim.lsp.protocol.CompletionItemKind[b.kind] == "Snippet" then
+				return false
+			end
+			if vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" then
+				return false
+			end
+			if vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" then
+				return true
+			end
+			local diff = a.kind - b.kind
+			if diff < 0 then
+				return true
+			elseif diff > 0 then
+				return false
 			end
 		end
+
+		-- Sort by lexicographical order of 'sortText'.
+		if a.sortText ~= b.sortText then
+			if not a.sortText then
+				return false
+			end
+			if not b.sortText then
+				return true
+			end
+			local diff = vim.stricmp(a.sortText, b.sortText)
+			if diff < 0 then
+				return true
+			elseif diff > 0 then
+				return false
+			end
+		end
+
+		-- Sort by length
+		if a.label ~= b.label then
+			if not a.label then
+				return false
+			end
+			if not b.label then
+				return true
+			end
+			return #a.label < #b.label
+		end
+	end)
+
+	for _, match in ipairs(matches) do
+		local item = match.item
+		local client_id = match.client_id
+		local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+		local word
+		if kind == "Snippet" then
+			word = item.label or ""
+		else
+			word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
+		end
+
+		local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
+		local replace = word_to_be_replaced == word
+
+		table.insert(words, {
+			word = replace and "" or word,
+			equal = 1, -- we will do the filtering ourselves
+			abbr = item.label,
+			kind = kind,
+			icase = 1,
+			dup = 1,
+			empty = 1,
+			user_data = {
+				nvim = {
+					lsp = {
+						completion_item = item,
+						client_id = client_id,
+						replace = replace and word or "",
+					},
+				},
+			},
+		})
 	end
 
 	return words
