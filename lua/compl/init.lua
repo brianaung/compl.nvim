@@ -1,6 +1,20 @@
 local vim = vim
 local unpack = unpack
 
+-- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L21
+local sep = (function()
+	if jit then
+		local os = string.lower(jit.os)
+		if os ~= "windows" then
+			return "/"
+		else
+			return "\\"
+		end
+	else
+		return package.config:sub(1, 1)
+	end
+end)()
+
 local function debounce(timer, timeout, callback)
 	return function(...)
 		local argv = { ... }
@@ -9,6 +23,38 @@ local function debounce(timer, timeout, callback)
 			vim.schedule_wrap(callback)(unpack(argv))
 		end)
 	end
+end
+
+-- https://github.com/L3MON4D3/LuaSnip/blob/master/lua/luasnip/util/path.lua#L47
+local function read_file(path)
+	-- permissions: rrr
+	local fd = assert(vim.uv.fs_open(path, "r", tonumber("0444", 8)))
+	local stat = assert(vim.uv.fs_fstat(fd))
+	-- read from offset 0.
+	local buf = assert(vim.uv.fs_read(fd, stat.size, 0))
+	vim.uv.fs_close(fd)
+
+	return buf
+end
+
+-- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L755
+local function read_async(file, callback)
+	vim.uv.fs_open(file, "r", 438, function(err_open, fd)
+		-- assert(not err_open, err_open)
+		vim.uv.fs_fstat(fd, function(err_fstat, stat)
+			-- assert(not err_fstat, err_fstat)
+			if stat.type ~= "file" then
+				return callback ""
+			end
+			vim.uv.fs_read(fd, stat.size, 0, function(err_read, data)
+				-- assert(not err_read, err_read)
+				vim.uv.fs_close(fd, function(err_close)
+					-- assert(not err_close, err_close)
+					return callback(data)
+				end)
+			end)
+		end)
+	end)
 end
 
 local M = {}
@@ -20,6 +66,11 @@ M.opts = {
 	},
 	info = {
 		timeout = 100,
+	},
+	snippet = {
+		manifest_paths = {
+			vim.fn.stdpath "data" .. "/lazy/friendly-snippets",
+		},
 	},
 }
 
@@ -52,9 +103,14 @@ M.info = {
 	end,
 }
 
+M.snippet = {
+	client_id = nil,
+	items = {},
+}
+
 function M.setup(opts)
 	if vim.fn.has "nvim-0.10" ~= 1 then
-		vim.notify("compl.nvim requires nvim-0.10 or higher. ", vim.log.levels.ERROR)
+		vim.notify("compl.nvim: requires nvim-0.10 or higher.", vim.log.levels.ERROR)
 		return
 	end
 
@@ -85,12 +141,12 @@ function M.setup(opts)
 
 	vim.api.nvim_create_autocmd({ "TextChangedI", "TextChangedP" }, {
 		group = group,
-		callback = debounce(M.completion.timer, M.opts.completion.timeout, M.trigger_completion),
+		callback = debounce(M.completion.timer, M.opts.completion.timeout, M.start_completion),
 	})
 
 	vim.api.nvim_create_autocmd("CompleteChanged", {
 		group = group,
-		callback = debounce(M.info.timer, M.opts.info.timeout, M.trigger_info),
+		callback = debounce(M.info.timer, M.opts.info.timeout, M.start_info),
 	})
 
 	vim.api.nvim_create_autocmd("CompleteDone", {
@@ -109,9 +165,15 @@ function M.setup(opts)
 			M.info.close_windows()
 		end,
 	})
+
+	-- Start custom snippets lsp server
+	vim.api.nvim_create_autocmd("BufEnter", {
+		group = group,
+		callback = M.start_snippets,
+	})
 end
 
-function M.trigger_completion()
+function M.start_completion()
 	M.ctx.cancel_pending()
 
 	local bufnr = vim.api.nvim_get_current_buf()
@@ -357,7 +419,7 @@ function M.completefunc(findstart, base)
 	return words
 end
 
-function M.trigger_info()
+function M.start_info()
 	M.info.close_windows()
 	M.ctx.cancel_pending()
 
@@ -514,6 +576,108 @@ function M.on_completedone()
 			end
 			table.insert(M.ctx.pending_requests, cancel_fn)
 		end
+	end
+end
+
+function M.start_snippets()
+	local filetype = vim.bo.filetype
+
+	if M.snippet.client_id then
+		vim.lsp.stop_client(M.snippet.client_id)
+		M.snippet.client_id = nil
+		M.snippet.data = {}
+	end
+
+	for _, dirpath in ipairs(M.opts.snippet.manifest_paths) do
+		local manifest_path = table.concat({ dirpath, "package.json" }, sep)
+
+		read_async(manifest_path, function(manifest_buffer)
+			local success_manifest_decode, manifest_data = pcall(vim.json.decode, manifest_buffer)
+			if not (success_manifest_decode and manifest_data.contributes and manifest_data.contributes.snippets) then
+				-- TODO log err
+				return
+			end
+			for _, snippet_contribute in ipairs(manifest_data.contributes.snippets) do
+				local languages = type(snippet_contribute.language) == "table" and snippet_contribute.language
+					or { snippet_contribute.language }
+
+				if vim.tbl_contains(languages, filetype) then
+					local snippet_path = vim.fn.resolve(table.concat({ dirpath, snippet_contribute.path }, sep))
+					read_async(snippet_path, function(snippet_buffer)
+						local success_snippet_decode, snippet_data = pcall(vim.json.decode, snippet_buffer)
+						if not success_snippet_decode then
+							-- TODO log err
+							return
+						end
+						for _, snippet in pairs(snippet_data) do
+							local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
+							for _, prefix in ipairs(prefixes) do
+								table.insert(M.snippet.items, {
+									detail = "snippet",
+									label = prefix,
+									kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
+									documentation = {
+										value = snippet.description,
+										kind = vim.lsp.protocol.MarkupKind.Markdown,
+									},
+									insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
+									insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n")
+										or snippet.body,
+								})
+							end
+						end
+					end)
+				end
+			end
+		end)
+	end
+
+	vim.schedule(function()
+		M.snippet.client_id = vim.lsp.start {
+			name = "compl_snippets",
+			cmd = M.custom_lsp_server {
+				isIncomplete = false,
+				items = M.snippet.items,
+			},
+		}
+	end)
+end
+
+function M.custom_lsp_server(completion_items)
+	return function(dispatchers)
+		local closing = false
+		local srv = {}
+
+		function srv.request(method, params, callback)
+			if method == "initialize" then
+				callback(nil, {
+					capabilities = {
+						completionProvider = true, -- the server has to provide completion support (true or pass options table)
+					},
+				})
+			elseif method == "textDocument/completion" then
+				callback(nil, completion_items)
+			elseif method == "shutdown" then
+				callback(nil, nil)
+			end
+			return true, 1
+		end
+
+		function srv.notify(method, params)
+			if method == "exit" then
+				dispatchers.on_exit(0, 15)
+			end
+		end
+
+		function srv.is_closing()
+			return closing
+		end
+
+		function srv.terminate()
+			closing = true
+		end
+
+		return srv
 	end
 end
 
