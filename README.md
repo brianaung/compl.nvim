@@ -1,19 +1,23 @@
 # compl.nvim
-A minimal and dependency-free auto-completion plugin built on top of Vim's ins-completion mechanism.
+A minimal and **dependency-free** auto-completion plugin built on top of Vim's ins-completion mechanism.
 
 ## Features
-- Asynchronous auto completion with a custom debounce
-- Supports Neovim's native snippet expansion (See `:h vim.snippet.expand()`)
-- Ability to apply additional text edits (e.g. auto-imports)
-- Dynamic sorting of completion items
-- Fuzzy matching capabilities
-- Smart text replace when completing the same word after cursor
-- Zero flicker when refreshing completion items list
-- Info windows
+- **Asynchronous completion** with customizable debounce for fast, responsive suggestions.
+- **Native snippet expansion** integration with Neovim’s built-in snippet system.
+- Support for **VS Code-style custom snippets** by [internally running a minimal LSP server](#using-vs-code-style-custom-snippets), seamlessly integrating snippet items into the existing completion workflow.
+- Ability to apply **additional text edits** (e.g., auto-imports) during completion.
+- **Rich documentation** in an info window for better context and understanding.
+- **Zero flicker** when refreshing the completion list, ensuring a smooth and seamless experience.
+- **Dynamic sorting** of completion items in multiple steps, improving relevance and accuracy.
+- **Fuzzy matching** for flexible, quick word completion, even with partial inputs.
+- **Smart word replacement** for completing repeated words after the cursor, saving time and effort.
 
-#### Non-goals
-- Multiple completion sources
-- Fancy popup menu highlights
+#### Planned Features
+- Support for custom completion sources via minimal LSP servers (using same patterns as the current custom snippets support).
+- Display of signature help for functions and methods.
+
+#### Design Philosophy
+Focused on minimalism and performance, without the overhead of complex configurations or external dependencies. Therefore, supporting non native popup menus with fancy colors or highlights is a non-goal.
 
 ## Installation
 **Using [lazy.nvim](https://github.com/folke/lazy.nvim):**
@@ -21,14 +25,18 @@ A minimal and dependency-free auto-completion plugin built on top of Vim's ins-c
 {
   "brianaung/compl.nvim",
   opts = {
-    -- Default options
-	-- fuzzy = false,
-	-- completion = {
-	-- 	timeout = 100,
-	-- },
-	-- info = {
-	-- 	timeout = 100,
-	-- },
+    -- Default options (no need to set them again)
+    completion = {
+      fuzzy = false,
+      timeout = 100,
+    },
+    info = {
+      timeout = 100,
+    },
+    snippet = {
+      enable = false,
+      paths = {},
+    },
   },
 }
 ```
@@ -83,6 +91,43 @@ vim.keymap.set({ "i", "s" }, "<C-j>", function()
   end
 end, { expr = true })
 ```
+
+## Using VS Code style custom snippets
+You can seamlessly integrate custom snippets into your existing completion workflow without any additional dependencies. A lightweight internal LSP server is used to parse the snippets from the specified paths, format them into the appropriate LSP response shape, and return them when Neovim’s LSP client sends a textDocument/completion request to the attached servers.
+
+### Example: Using Friendly Snippets
+To use a collection of snippets such as those provided in [rafamadriz/friendly-snippets](https://github.com/rafamadriz/friendly-snippets), install it as a dependency and point to the location of its `package.json` manifest file. Here's how to configure it using `lazy.nvim`:
+
+```lua
+{
+  "brianaung/compl.nvim",
+  dependencies = {
+    "rafamadriz/friendly-snippets"
+  },
+  opts = {
+    -- ...
+    snippet = {
+      enable = true,
+      paths = {
+	vim.fn.stdpath "data" .. "/lazy/friendly-snippets",
+	-- You can include more paths that contains the package.json manifest for your custom snippets. See below for defining your own snippets.
+      },
+    },
+    -- ...
+  },
+}
+```
+
+### Defining Your Own Snippets
+If you'd like to define your own snippets for a specific language, you can create a JSON file with your snippets following this [syntax](https://code.visualstudio.com/docs/editor/userdefinedsnippets#_create-your-own-snippets).
+
+You’ll then need to create a [package.json](https://code.visualstudio.com/api/references/contribution-points#contributes.snippets) manifest that will describe how to retrieve snippets for each filetype.
+- Language: The language in the manifest should match the filetype used by Neovim (e.g., vim.bo.filetype).
+- Path: Provide the file path to your snippet JSON file.
+
+#### References
+- https://www.reddit.com/r/neovim/comments/1g1x0v3/hacking_native_snippets_into_lsp_for_builtin/?rdt=41546
+- https://zignar.net/2022/10/26/testing-neovim-lsp-plugins/#a-in-process-lsp-server
 
 ## ~Similar~ Better alternatives
 - [nvim-cmp](https://github.com/hrsh7th/nvim-cmp)
