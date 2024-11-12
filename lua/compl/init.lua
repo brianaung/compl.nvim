@@ -1,5 +1,22 @@
-local vim = vim
+local jit = jit
+local package = package
+local pcall = pcall
 local unpack = unpack
+local vim = vim
+
+-- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L21
+local sep = (function()
+	if jit then
+		local os = string.lower(jit.os)
+		if os ~= "windows" then
+			return "/"
+		else
+			return "\\"
+		end
+	else
+		return package.config:sub(1, 1)
+	end
+end)()
 
 local function debounce(timer, timeout, callback)
 	return function(...)
@@ -11,15 +28,52 @@ local function debounce(timer, timeout, callback)
 	end
 end
 
+-- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L755
+local function async_read(file, callback)
+	vim.uv.fs_open(file, "r", 438, function(err_open, fd)
+		assert(not err_open, err_open)
+		vim.uv.fs_fstat(fd, function(err_fstat, stat)
+			assert(not err_fstat, err_fstat)
+			if stat.type ~= "file" then
+				return callback ""
+			end
+			vim.uv.fs_read(fd, stat.size, 0, function(err_read, data)
+				assert(not err_read, err_read)
+				vim.uv.fs_close(fd, function(err_close)
+					assert(not err_close, err_close)
+					return callback(data)
+				end)
+			end)
+		end)
+	end)
+end
+
+local function async_read_json(file, callback)
+	async_read(file, function(buffer)
+		local success, data = pcall(vim.json.decode, buffer)
+		if not success then
+			vim.schedule(function()
+				vim.notify(string.format("compl.nvim: Could not decode json file %s", file), vim.log.levels.ERROR)
+			end)
+			return
+		end
+		callback(data)
+	end)
+end
+
 local M = {}
 
 M.opts = {
-	fuzzy = false,
 	completion = {
 		timeout = 100,
+		fuzzy = false,
 	},
 	info = {
 		timeout = 100,
+	},
+	snippet = {
+		enable = false,
+		paths = {},
 	},
 }
 
@@ -52,20 +106,28 @@ M.info = {
 	end,
 }
 
+M.snippet = {
+	client_id = nil,
+	items = {},
+}
+
 function M.setup(opts)
 	if vim.fn.has "nvim-0.10" ~= 1 then
-		vim.notify("compl.nvim requires nvim-0.10 or higher. ", vim.log.levels.ERROR)
+		vim.notify("compl.nvim: Requires nvim-0.10 or higher.", vim.log.levels.ERROR)
 		return
 	end
 
 	-- apply and validate settings
 	M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
 	vim.validate {
-		["fuzzy"] = { M.opts.fuzzy, "b" },
 		["completion"] = { M.opts.completion, "t" },
 		["completion.timeout"] = { M.opts.completion.timeout, "n" },
+		["completion.fuzzy"] = { M.opts.completion.fuzzy, "b" },
 		["info"] = { M.opts.info, "t" },
 		["info.timeout"] = { M.opts.info.timeout, "n" },
+		["snippet"] = { M.opts.snippet, "t" },
+		["snippet.enable"] = { M.opts.snippet.enable, "b" },
+		["snippet.paths"] = { M.opts.snippet.paths, "t" },
 	}
 
 	_G.Compl = { completefunc = M.completefunc }
@@ -85,12 +147,12 @@ function M.setup(opts)
 
 	vim.api.nvim_create_autocmd({ "TextChangedI", "TextChangedP" }, {
 		group = group,
-		callback = debounce(M.completion.timer, M.opts.completion.timeout, M.trigger_completion),
+		callback = debounce(M.completion.timer, M.opts.completion.timeout, M.start_completion),
 	})
 
 	vim.api.nvim_create_autocmd("CompleteChanged", {
 		group = group,
-		callback = debounce(M.info.timer, M.opts.info.timeout, M.trigger_info),
+		callback = debounce(M.info.timer, M.opts.info.timeout, M.start_info),
 	})
 
 	vim.api.nvim_create_autocmd("CompleteDone", {
@@ -109,9 +171,16 @@ function M.setup(opts)
 			M.info.close_windows()
 		end,
 	})
+
+	if M.opts.snippet.enable then
+		vim.api.nvim_create_autocmd("BufEnter", {
+			group = group,
+			callback = M.start_snippet,
+		})
+	end
 end
 
-function M.trigger_completion()
+function M.start_completion()
 	M.ctx.cancel_pending()
 
 	local bufnr = vim.api.nvim_get_current_buf()
@@ -230,134 +299,136 @@ function M.completefunc(findstart, base)
 
 	-- Process and find completion words
 	local words = {}
+	local matches = {}
 	for client_id, response in pairs(M.completion.responses) do
 		if not response.err and response.result then
 			local items = response.result.items or response.result or {}
 
-			local matches = {}
 			for _, item in pairs(items) do
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-				if M.opts.fuzzy then
+				if M.opts.completion.fuzzy then
 					local fuzzy = vim.fn.matchfuzzy({ text }, base)
 					if vim.startswith(text, base:sub(1, 1)) and (base == "" or next(fuzzy)) then
-						table.insert(matches, item)
+						table.insert(matches, { client_id, item })
 					end
 				else
 					if vim.startswith(text, base) then
-						table.insert(matches, item)
+						table.insert(matches, { client_id = client_id, item = item })
 					end
 				end
 				-- Add an extra custom field to mark exact matches
 				item.exact = text == base
 			end
+		end
+	end
 
-			-- Sorting is done with multiple fallbacks.
-			-- If it fails to find diff in each stage, it will then fallback to the next stage.
-			-- https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/compare.lua
-			table.sort(matches, function(a, b)
-				-- Sort by exact matches
-				if a.exact ~= b.exact then
-					return a.exact or false -- nil should return false
-				end
+	-- Sorting is done with multiple fallbacks.
+	-- If it fails to find diff in each stage, it will then fallback to the next stage.
+	-- https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/compare.lua
+	table.sort(matches, function(a, b)
+		a, b = a.item, b.item
 
-				-- Sort by ordinal value of 'kind'.
-				-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
-				if a.kind ~= b.kind then
-					if not a.kind then
-						return false
-					end
-					if not b.kind then
-						return true
-					end
-					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
-						return true
-					end
-					if vim.lsp.protocol.CompletionItemKind[b.kind] == "Snippet" then
-						return false
-					end
-					if vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" then
-						return false
-					end
-					if vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" then
-						return true
-					end
-					local diff = a.kind - b.kind
-					if diff < 0 then
-						return true
-					elseif diff > 0 then
-						return false
-					end
-				end
+		-- Sort by exact matches
+		if a.exact ~= b.exact then
+			return a.exact or false -- nil should return false
+		end
 
-				-- Sort by lexicographical order of 'sortText'.
-				if a.sortText ~= b.sortText then
-					if not a.sortText then
-						return false
-					end
-					if not b.sortText then
-						return true
-					end
-					local diff = vim.stricmp(a.sortText, b.sortText)
-					if diff < 0 then
-						return true
-					elseif diff > 0 then
-						return false
-					end
-				end
-
-				-- Sort by length
-				if a.label ~= b.label then
-					if not a.label then
-						return false
-					end
-					if not b.label then
-						return true
-					end
-					return #a.label < #b.label
-				end
-
+		-- Sort by ordinal value of 'kind'.
+		-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
+		if a.kind ~= b.kind then
+			if not a.kind then
+				return false
+			end
+			if not b.kind then
 				return true
-			end)
-
-			for _, item in ipairs(matches) do
-				local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
-				local word
-				if kind == "Snippet" then
-					word = item.label or ""
-				else
-					word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
-				end
-
-				local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
-				local replace = word_to_be_replaced == word
-
-				table.insert(words, {
-					word = replace and "" or word,
-					equal = 1, -- we will do the filtering ourselves
-					abbr = item.label,
-					kind = kind,
-					icase = 1,
-					dup = 1,
-					empty = 1,
-					user_data = {
-						nvim = {
-							lsp = {
-								completion_item = item,
-								client_id = client_id,
-								replace = replace and word or "",
-							},
-						},
-					},
-				})
+			end
+			if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
+				return true
+			end
+			if vim.lsp.protocol.CompletionItemKind[b.kind] == "Snippet" then
+				return false
+			end
+			if vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" then
+				return false
+			end
+			if vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" then
+				return true
+			end
+			local diff = a.kind - b.kind
+			if diff < 0 then
+				return true
+			elseif diff > 0 then
+				return false
 			end
 		end
+
+		-- Sort by lexicographical order of 'sortText'.
+		if a.sortText ~= b.sortText then
+			if not a.sortText then
+				return false
+			end
+			if not b.sortText then
+				return true
+			end
+			local diff = vim.stricmp(a.sortText, b.sortText)
+			if diff < 0 then
+				return true
+			elseif diff > 0 then
+				return false
+			end
+		end
+
+		-- Sort by length
+		if a.label ~= b.label then
+			if not a.label then
+				return false
+			end
+			if not b.label then
+				return true
+			end
+			return #a.label < #b.label
+		end
+	end)
+
+	for _, match in ipairs(matches) do
+		local item = match.item
+		local client_id = match.client_id
+		local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+		local word
+		if kind == "Snippet" then
+			word = item.label or ""
+		else
+			word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
+		end
+
+		local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
+		local replace = word_to_be_replaced == word
+
+		table.insert(words, {
+			word = replace and "" or word,
+			equal = 1, -- we will do the filtering ourselves
+			abbr = item.label,
+			kind = kind,
+			icase = 1,
+			dup = 1,
+			empty = 1,
+			user_data = {
+				nvim = {
+					lsp = {
+						completion_item = item,
+						client_id = client_id,
+						replace = replace and word or "",
+					},
+				},
+			},
+		})
 	end
 
 	return words
 end
 
-function M.trigger_info()
+function M.start_info()
 	M.info.close_windows()
 	M.ctx.cancel_pending()
 
@@ -514,6 +585,110 @@ function M.on_completedone()
 			end
 			table.insert(M.ctx.pending_requests, cancel_fn)
 		end
+	end
+end
+
+function M.start_snippet()
+	M.snippet.items = {}
+
+	local filetype = vim.bo.filetype
+
+	for _, dirpath in ipairs(M.opts.snippet.paths) do
+		local manifest_path = table.concat({ dirpath, "package.json" }, sep)
+		async_read_json(manifest_path, function(manifest_data)
+			if not (manifest_data.contributes and manifest_data.contributes.snippets) then
+				return
+			end
+
+			-- Filter snips for other filetypes
+			local snippet_contributes = vim.tbl_filter(function(s)
+				return type(s.language) == "table" and vim.tbl_contains(s.language, filetype) or s.language == filetype
+			end, manifest_data.contributes.snippets)
+
+			for _, snippet_contribute in ipairs(snippet_contributes) do
+				local snippet_path = vim.fn.resolve(table.concat({ dirpath, snippet_contribute.path }, sep))
+				async_read_json(snippet_path, function(snippet_data)
+					for _, snippet in pairs(snippet_data) do
+						local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
+						local insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n")
+							or snippet.body
+						for _, prefix in ipairs(prefixes) do
+							table.insert(M.snippet.items, {
+								detail = "snippet",
+								label = prefix,
+								kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
+								documentation = {
+									value = snippet.description,
+									kind = vim.lsp.protocol.MarkupKind.Markdown,
+								},
+								insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
+								insertText = insertText,
+							})
+						end
+					end
+				end)
+			end
+		end)
+	end
+	M.start_snippet_server()
+end
+
+function M.start_snippet_server()
+	if M.snippet.client_id then
+		vim.lsp.stop_client(M.snippet.client_id)
+	end
+
+	vim.defer_fn(function()
+		if (not M.snippet.client_id) or vim.lsp.client_is_stopped(M.snippet.client_id) then
+			M.snippet.client_id = nil
+			M.snippet.client_id = vim.lsp.start {
+				name = "compl_snippets",
+				cmd = M.custom_lsp_server {
+					isIncomplete = false,
+					items = M.snippet.items,
+				},
+			}
+		else
+			M.start_snippet_server()
+		end
+	end, 500)
+end
+
+function M.custom_lsp_server(completion_items)
+	return function(dispatchers)
+		local closing = false
+		local srv = {}
+
+		function srv.request(method, params, callback)
+			if method == "initialize" then
+				callback(nil, {
+					capabilities = {
+						completionProvider = true, -- the server has to provide completion support (true or pass options table)
+					},
+				})
+			elseif method == "textDocument/completion" then
+				callback(nil, completion_items)
+			elseif method == "shutdown" then
+				callback(nil, nil)
+			end
+			return true, 1
+		end
+
+		function srv.notify(method, params)
+			if method == "exit" then
+				dispatchers.on_exit(0, 15)
+			end
+		end
+
+		function srv.is_closing()
+			return closing
+		end
+
+		function srv.terminate()
+			closing = true
+		end
+
+		return srv
 	end
 end
 
