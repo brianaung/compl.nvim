@@ -64,14 +64,17 @@ end
 local M = {}
 
 M.opts = {
-	fuzzy = false,
 	completion = {
 		timeout = 100,
+		fuzzy = false,
 	},
 	info = {
 		timeout = 100,
 	},
-	snippet = { paths = {} },
+	snippet = {
+		enable = false,
+		paths = {},
+	},
 }
 
 M.ctx = {
@@ -117,11 +120,14 @@ function M.setup(opts)
 	-- apply and validate settings
 	M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
 	vim.validate {
-		["fuzzy"] = { M.opts.fuzzy, "b" },
 		["completion"] = { M.opts.completion, "t" },
 		["completion.timeout"] = { M.opts.completion.timeout, "n" },
+		["completion.fuzzy"] = { M.opts.completion.fuzzy, "b" },
 		["info"] = { M.opts.info, "t" },
 		["info.timeout"] = { M.opts.info.timeout, "n" },
+		["snippet"] = { M.opts.snippet, "t" },
+		["snippet.enable"] = { M.opts.snippet.enable, "b" },
+		["snippet.paths"] = { M.opts.snippet.paths, "t" },
 	}
 
 	_G.Compl = { completefunc = M.completefunc }
@@ -166,11 +172,12 @@ function M.setup(opts)
 		end,
 	})
 
-	-- Start custom snippets lsp server
-	vim.api.nvim_create_autocmd("BufEnter", {
-		group = group,
-		callback = M.start_snippet,
-	})
+	if M.opts.snippet.enable then
+		vim.api.nvim_create_autocmd("BufEnter", {
+			group = group,
+			callback = M.start_snippet,
+		})
+	end
 end
 
 function M.start_completion()
@@ -300,7 +307,7 @@ function M.completefunc(findstart, base)
 			for _, item in pairs(items) do
 				local text = item.filterText
 					or (vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or "")
-				if M.opts.fuzzy then
+				if M.opts.completion.fuzzy then
 					local fuzzy = vim.fn.matchfuzzy({ text }, base)
 					if vim.startswith(text, base:sub(1, 1)) and (base == "" or next(fuzzy)) then
 						table.insert(matches, { client_id, item })
@@ -582,13 +589,9 @@ function M.on_completedone()
 end
 
 function M.start_snippet()
-	local filetype = vim.bo.filetype
+	M.snippet.items = {}
 
-	if M.snippet.client_id then
-		vim.lsp.stop_client(M.snippet.client_id)
-		M.snippet.client_id = nil
-		M.snippet.data = {}
-	end
+	local filetype = vim.bo.filetype
 
 	for _, dirpath in ipairs(M.opts.snippet.paths) do
 		local manifest_path = table.concat({ dirpath, "package.json" }, sep)
@@ -627,16 +630,28 @@ function M.start_snippet()
 			end
 		end)
 	end
+	M.start_snippet_server()
+end
 
-	vim.schedule(function()
-		M.snippet.client_id = vim.lsp.start {
-			name = "compl_snippets",
-			cmd = M.custom_lsp_server {
-				isIncomplete = false,
-				items = M.snippet.items,
-			},
-		}
-	end)
+function M.start_snippet_server()
+	if M.snippet.client_id then
+		vim.lsp.stop_client(M.snippet.client_id)
+	end
+
+	vim.defer_fn(function()
+		if (not M.snippet.client_id) or vim.lsp.client_is_stopped(M.snippet.client_id) then
+			M.snippet.client_id = nil
+			M.snippet.client_id = vim.lsp.start {
+				name = "compl_snippets",
+				cmd = M.custom_lsp_server {
+					isIncomplete = false,
+					items = M.snippet.items,
+				},
+			}
+		else
+			M.start_snippet_server()
+		end
+	end, 500)
 end
 
 function M.custom_lsp_server(completion_items)
