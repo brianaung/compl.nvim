@@ -51,7 +51,7 @@ end
 local function async_read_json(file, callback)
 	async_read(file, function(buffer)
 		local success, data = pcall(vim.json.decode, buffer)
-		if not success then
+		if not success or not data then
 			vim.schedule(function()
 				vim.notify(string.format("compl.nvim: Could not decode json file %s", file), vim.log.levels.ERROR)
 			end)
@@ -434,7 +434,7 @@ function M.start_info()
 
 	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
 	local completion_item = lsp_data.completion_item or {}
-	if vim.tbl_isempty(completion_item) then
+	if not next(completion_item) then
 		return
 	end
 
@@ -486,10 +486,10 @@ function M.open_info_window(item)
 		input = detail .. "\n" .. documentation
 	end
 
-	local lines = vim.lsp.util.convert_input_to_markdown_lines(input)
-	local pumpos = vim.fn.pum_getpos()
+	local lines = vim.lsp.util.convert_input_to_markdown_lines(input) or {}
+	local pumpos = vim.fn.pum_getpos() or {}
 
-	if not vim.tbl_isempty(lines) and not vim.tbl_isempty(pumpos) then
+	if next(lines) and next(pumpos) then
 		-- Convert lines into syntax highlighted regions and set it in the buffer
 		vim.lsp.util.stylize_markdown(M.info.bufnr, lines)
 
@@ -529,7 +529,7 @@ function M.on_completedone()
 
 	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
 	local completion_item = lsp_data.completion_item or {}
-	if vim.tbl_isempty(completion_item) then
+	if not next(completion_item) then
 		return
 	end
 
@@ -563,7 +563,7 @@ function M.on_completedone()
 
 	-- Apply additionalTextEdits
 	local edits = completion_item.additionalTextEdits or {}
-	if not vim.tbl_isempty(edits) then
+	if next(edits) then
 		vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
 	else
 		-- TODO fix bug
@@ -573,7 +573,7 @@ function M.on_completedone()
 		-- Result: Completed item is not removed without the undo changes.
 		local ok, request_id = client.request("completionItem/resolve", completion_item, function(err, result)
 			edits = (not err) and (result.additionalTextEdits or {}) or {}
-			if not vim.tbl_isempty(edits) then
+			if next(edits) then
 				vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
 			end
 		end)
@@ -589,47 +589,50 @@ function M.on_completedone()
 end
 
 function M.start_snippet()
-	M.snippet.items = {}
-
 	local filetype = vim.bo.filetype
 
-	for _, dirpath in ipairs(M.opts.snippet.paths) do
-		local manifest_path = table.concat({ dirpath, "package.json" }, sep)
-		async_read_json(manifest_path, function(manifest_data)
-			if not (manifest_data.contributes and manifest_data.contributes.snippets) then
-				return
-			end
-
-			-- Filter snips for other filetypes
-			local snippet_contributes = vim.tbl_filter(function(s)
-				return type(s.language) == "table" and vim.tbl_contains(s.language, filetype) or s.language == filetype
-			end, manifest_data.contributes.snippets)
-
-			for _, snippet_contribute in ipairs(snippet_contributes) do
-				local snippet_path = vim.fn.resolve(table.concat({ dirpath, snippet_contribute.path }, sep))
-				async_read_json(snippet_path, function(snippet_data)
-					for _, snippet in pairs(snippet_data) do
-						local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
-						local insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n")
-							or snippet.body
-						for _, prefix in ipairs(prefixes) do
-							table.insert(M.snippet.items, {
-								detail = "snippet",
-								label = prefix,
-								kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
-								documentation = {
-									value = snippet.description,
-									kind = vim.lsp.protocol.MarkupKind.Markdown,
-								},
-								insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
-								insertText = insertText,
-							})
-						end
-					end
-				end)
-			end
+	local parse_snippet_data = function(snippet_data)
+		vim.iter(snippet_data or {}):each(function(_, snippet)
+			local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
+			vim.iter(prefixes):each(function(prefix)
+				table.insert(M.snippet.items, {
+					detail = "snippet",
+					label = prefix,
+					kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
+					documentation = {
+						value = snippet.description,
+						kind = vim.lsp.protocol.MarkupKind.Markdown,
+					},
+					insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
+					insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n") or snippet.body,
+				})
+			end)
 		end)
 	end
+
+	M.snippet.items = {}
+	vim.iter(M.opts.snippet.paths):each(function(root)
+		local manifest_path = table.concat({ root, "package.json" }, sep)
+		async_read_json(manifest_path, function(manifest_data)
+			vim.iter((manifest_data.contributes and manifest_data.contributes.snippets) or {})
+				:filter(function(s)
+					if type(s.language) == "table" then
+						return vim.iter(s.language):any(function(l)
+							return l == filetype
+						end)
+					else
+						return s.language == filetype
+					end
+				end)
+				:map(function(snippet_contribute)
+					return vim.fn.resolve(table.concat({ root, snippet_contribute.path }, sep))
+				end)
+				:each(function(snippet_path)
+					async_read_json(snippet_path, parse_snippet_data)
+				end)
+		end)
+	end)
+
 	M.start_snippet_server()
 end
 
