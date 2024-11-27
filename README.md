@@ -31,6 +31,7 @@ Focused on minimalism and performance, without the overhead of complex configura
       timeout = 100,
     },
     info = {
+      enable = true,
       timeout = 100,
     },
     snippet = {

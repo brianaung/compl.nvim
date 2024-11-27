@@ -9,6 +9,7 @@ M._opts = {
 		fuzzy = false,
 	},
 	info = {
+		enable = true,
 		timeout = 100,
 	},
 	snippet = {
@@ -64,15 +65,12 @@ function M.setup(opts)
 		["completion.timeout"] = { M._opts.completion.timeout, "n" },
 		["completion.fuzzy"] = { M._opts.completion.fuzzy, "b" },
 		["info"] = { M._opts.info, "t" },
+		["info.enable"] = { M._opts.info.enable, "b" },
 		["info.timeout"] = { M._opts.info.timeout, "n" },
 		["snippet"] = { M._opts.snippet, "t" },
 		["snippet.enable"] = { M._opts.snippet.enable, "b" },
 		["snippet.paths"] = { M._opts.snippet.paths, "t" },
 	}
-
-	M._info.bufnr = vim.api.nvim_create_buf(false, true)
-	vim.api.nvim_buf_set_name(M._info.bufnr, "Compl:InfoWindow")
-	vim.fn.setbufvar(M._info.bufnr, "&buftype", "nofile")
 
 	local group = vim.api.nvim_create_augroup("Compl", { clear = true })
 
@@ -86,11 +84,6 @@ function M.setup(opts)
 	vim.api.nvim_create_autocmd({ "TextChangedI", "TextChangedP" }, {
 		group = group,
 		callback = util.debounce(M._completion.timer, M._opts.completion.timeout, M._start_completion),
-	})
-
-	vim.api.nvim_create_autocmd("CompleteChanged", {
-		group = group,
-		callback = util.debounce(M._info.timer, M._opts.info.timeout, M._start_info),
 	})
 
 	vim.api.nvim_create_autocmd("CompleteDone", {
@@ -109,6 +102,17 @@ function M.setup(opts)
 			M._info.close_windows()
 		end,
 	})
+
+	if M._opts.info.enable then
+		M._info.bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_buf_set_name(M._info.bufnr, "Compl:InfoWindow")
+		vim.fn.setbufvar(M._info.bufnr, "&buftype", "nofile")
+
+		vim.api.nvim_create_autocmd("CompleteChanged", {
+			group = group,
+			callback = util.debounce(M._info.timer, M._opts.info.timeout, M._start_info),
+		})
+	end
 
 	if M._opts.snippet.enable then
 		vim.api.nvim_create_autocmd("BufEnter", {
