@@ -159,31 +159,31 @@ function M._start_completion()
 		--
 		-- If a completion list specifies a default value and a completion item
 		-- also specifies a corresponding value the one from the item is used."
-		for _, response in pairs(responses) do
-			if not response.err and response.result then
+		vim.iter(pairs(responses))
+			:filter(function(_, response)
+				return (not response.err) and response.result and response.result.itemDefaults
+			end)
+			:each(function(_, response)
+				local itemDefaults = response.result.itemDefaults
 				local items = response.result.items or response.result or {}
-				for _, item in pairs(items) do
-					local itemDefaults = response.result.itemDefaults
-					if itemDefaults then
-						-- https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/completion.lua#L173
-						item.insertTextFormat = item.insertTextFormat or itemDefaults.insertTextFormat
-						item.insertTextMode = item.insertTextMode or itemDefaults.insertTextMode
-						item.data = item.data or itemDefaults.data
-						if itemDefaults.editRange then
-							local textEdit = item.textEdit or {}
-							item.textEdit = textEdit
-							textEdit.newText = textEdit.newText or item.textEditText or item.insertText
-							if itemDefaults.editRange.start then
-								textEdit.range = textEdit.range or itemDefaults.editRange
-							elseif itemDefaults.editRange.insert then
-								textEdit.insert = itemDefaults.editRange.insert
-								textEdit.replace = itemDefaults.editRange.replace
-							end
+				vim.iter(ipairs(items)):each(function(_, item)
+					-- https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/completion.lua#L173
+					item.insertTextFormat = item.insertTextFormat or itemDefaults.insertTextFormat
+					item.insertTextMode = item.insertTextMode or itemDefaults.insertTextMode
+					item.data = item.data or itemDefaults.data
+					if itemDefaults.editRange then
+						local textEdit = item.textEdit or {}
+						item.textEdit = textEdit
+						textEdit.newText = textEdit.newText or item.textEditText or item.insertText
+						if itemDefaults.editRange.start then
+							textEdit.range = textEdit.range or itemDefaults.editRange
+						elseif itemDefaults.editRange.insert then
+							textEdit.insert = itemDefaults.editRange.insert
+							textEdit.replace = itemDefaults.editRange.replace
 						end
 					end
-				end
-			end
-		end
+				end)
+			end)
 		M._completion.responses = responses
 
 		if vim.fn.mode() == "i" then
@@ -215,7 +215,6 @@ function _G.Compl.completefunc(findstart, base)
 		--                  so we'd eliminate the `plenary.async` result
 		--
 		-- We prefer to use the language server boundary if available.
-		--
 		for _, response in pairs(M._completion.responses) do
 			if not response.err and response.result then
 				local items = response.result.items or response.result or {}
@@ -236,7 +235,6 @@ function _G.Compl.completefunc(findstart, base)
 	end
 
 	-- Process and find completion words
-	local words = {}
 	local matches = {}
 	for client_id, response in pairs(M._completion.responses) do
 		if not response.err and response.result then
@@ -329,41 +327,39 @@ function _G.Compl.completefunc(findstart, base)
 		end
 	end)
 
-	for _, match in ipairs(matches) do
-		local item = match.item
-		local client_id = match.client_id
-		local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
-		local word
-		if kind == "Snippet" then
-			word = item.label or ""
-		else
-			word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
-		end
-
-		local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
-		local replace = word_to_be_replaced == word
-
-		table.insert(words, {
-			word = replace and "" or word,
-			equal = 1, -- we will do the filtering ourselves
-			abbr = item.label,
-			kind = kind,
-			icase = 1,
-			dup = 1,
-			empty = 1,
-			user_data = {
-				nvim = {
-					lsp = {
-						completion_item = item,
-						client_id = client_id,
-						replace = replace and word or "",
+	return vim.iter(ipairs(matches))
+		:map(function(_, match)
+			local item = match.item
+			local client_id = match.client_id
+			local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+			local word
+			if kind == "Snippet" then
+				word = item.label or ""
+			else
+				word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
+			end
+			local word_to_be_replaced = line:sub(col + 1, col + vim.fn.strwidth(word))
+			local replace = word_to_be_replaced == word
+			return {
+				word = replace and "" or word,
+				equal = 1, -- we will do the filtering ourselves
+				abbr = item.label,
+				kind = kind,
+				icase = 1,
+				dup = 1,
+				empty = 1,
+				user_data = {
+					nvim = {
+						lsp = {
+							completion_item = item,
+							client_id = client_id,
+							replace = replace and word or "",
+						},
 					},
 				},
-			},
-		})
-	end
-
-	return words
+			}
+		end)
+		:totable()
 end
 
 function M._start_info()
@@ -530,9 +526,9 @@ function M._start_snippet()
 	local filetype = vim.bo.filetype
 
 	local parse_snippet_data = function(snippet_data)
-		vim.iter(snippet_data or {}):each(function(_, snippet)
+		vim.iter(pairs(snippet_data or {})):each(function(_, snippet)
 			local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
-			vim.iter(prefixes):each(function(prefix)
+			vim.iter(ipairs(prefixes)):each(function(_, prefix)
 				table.insert(M._snippet.items, {
 					detail = "snippet",
 					label = prefix,
@@ -549,20 +545,20 @@ function M._start_snippet()
 	end
 
 	M._snippet.items = {}
-	vim.iter(M._opts.snippet.paths):each(function(root)
+	vim.iter(ipairs(M._opts.snippet.paths)):each(function(_, root)
 		local manifest_path = table.concat({ root, "package.json" }, util.sep)
 		util.async_read_json(manifest_path, function(manifest_data)
-			vim.iter((manifest_data.contributes and manifest_data.contributes.snippets) or {})
-				:filter(function(s)
+			vim.iter(ipairs((manifest_data.contributes and manifest_data.contributes.snippets) or {}))
+				:filter(function(_, s)
 					if type(s.language) == "table" then
-						return vim.iter(s.language):any(function(l)
+						return vim.iter(ipairs(s.language)):any(function(_, l)
 							return l == filetype
 						end)
 					else
 						return s.language == filetype
 					end
 				end)
-				:map(function(snippet_contribute)
+				:map(function(_, snippet_contribute)
 					return vim.fn.resolve(table.concat({ root, snippet_contribute.path }, util.sep))
 				end)
 				:each(function(snippet_path)
