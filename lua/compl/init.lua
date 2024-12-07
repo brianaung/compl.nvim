@@ -577,22 +577,16 @@ end
 function M._start_snippet_server()
 	if M._snippet.client_id then
 		vim.lsp.stop_client(M._snippet.client_id)
+		M._snippet.client_id = nil
 	end
 
-	vim.defer_fn(function()
-		if (not M._snippet.client_id) or vim.lsp.client_is_stopped(M._snippet.client_id) then
-			M._snippet.client_id = nil
-			M._snippet.client_id = vim.lsp.start {
-				name = "compl_snippets",
-				cmd = M.make_lsp_server {
-					isIncomplete = false,
-					items = M._snippet.items,
-				},
-			}
-		else
-			M._start_snippet_server()
-		end
-	end, 500)
+	M._snippet.client_id = vim.lsp.start {
+		name = "compl_snippets",
+		cmd = M.make_lsp_server {
+			isIncomplete = false,
+			items = M._snippet.items,
+		},
+	}
 end
 
 function M.make_lsp_server(completion_items)
