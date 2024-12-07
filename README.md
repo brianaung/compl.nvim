@@ -126,7 +126,7 @@ You’ll then need to create a [`package.json` manifest](https://code.visualstud
 - `language`: The language in the manifest should match the filetype used by Neovim (e.g., `vim.bo.filetype`).
 - `path`: Provide the file path to your snippet JSON file.
 
-#### References
+### References
 - https://zignar.net/2022/10/26/testing-neovim-lsp-plugins/#a-in-process-lsp-server
 - https://www.reddit.com/r/neovim/comments/1g1x0v3/hacking_native_snippets_into_lsp_for_builtin/?rdt=41546
 
