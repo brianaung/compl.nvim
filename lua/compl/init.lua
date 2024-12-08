@@ -152,7 +152,7 @@ function M._start_completion()
 	M._ctx.cursor = { row, col }
 
 	-- Make a request to get completion items
-	local position_params = vim.lsp.util.make_position_params()
+	local position_params = util.make_position_params()
 	local cancel_fn = vim.lsp.buf_request_all(bufnr, "textDocument/completion", position_params, function(responses)
 		-- Apply itemDefaults to completion item as per the LSP specs:
 		--
