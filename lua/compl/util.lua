@@ -66,4 +66,42 @@ function M.make_position_params()
 	return vim.lsp.util.make_position_params()
 end
 
+function M.make_lsp_server(completion_items)
+	return function(dispatchers)
+		local closing = false
+		local srv = {}
+
+		function srv.request(method, params, callback)
+			if method == "initialize" then
+				callback(nil, {
+					capabilities = {
+						completionProvider = true, -- the server has to provide completion support (true or pass options table)
+					},
+				})
+			elseif method == "textDocument/completion" then
+				callback(nil, completion_items)
+			elseif method == "shutdown" then
+				callback(nil, nil)
+			end
+			return true, 1
+		end
+
+		function srv.notify(method, params)
+			if method == "exit" then
+				dispatchers.on_exit(0, 15)
+			end
+		end
+
+		function srv.is_closing()
+			return closing
+		end
+
+		function srv.terminate()
+			closing = true
+		end
+
+		return srv
+	end
+end
+
 return M
