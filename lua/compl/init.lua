@@ -27,6 +27,7 @@ M._ctx = {
 		end
 		M._ctx.pending_requests = {}
 	end,
+	completed_records = {},
 }
 
 M._completion = {
@@ -274,6 +275,13 @@ function _G.Compl.completefunc(findstart, base)
 			return a.exact or false -- nil should return false
 		end
 
+		-- Sort by recency
+		local a_ts = M._ctx.completed_records[a.label] or -1
+		local b_ts = M._ctx.completed_records[b.label] or -1
+		if a_ts ~= b_ts then
+			return a_ts > b_ts
+		end
+
 		-- Sort by ordinal value of 'kind'.
 		-- Exceptions: 'Snippet' are ranked highest, and 'Text' are ranked lowest
 		if a.kind ~= b.kind then
@@ -283,16 +291,18 @@ function _G.Compl.completefunc(findstart, base)
 			if not b.kind then
 				return true
 			end
-			if vim.lsp.protocol.CompletionItemKind[a.kind] == "Snippet" then
+			local a_kind = vim.lsp.protocol.CompletionItemKind[a.kind]
+			local b_kind = vim.lsp.protocol.CompletionItemKind[b.kind]
+			if a_kind == "Snippet" then
 				return true
 			end
-			if vim.lsp.protocol.CompletionItemKind[b.kind] == "Snippet" then
+			if b_kind == "Snippet" then
 				return false
 			end
-			if vim.lsp.protocol.CompletionItemKind[a.kind] == "Text" then
+			if a_kind == "Text" then
 				return false
 			end
-			if vim.lsp.protocol.CompletionItemKind[b.kind] == "Text" then
+			if b_kind == "Text" then
 				return true
 			end
 			local diff = a.kind - b.kind
@@ -320,15 +330,7 @@ function _G.Compl.completefunc(findstart, base)
 		end
 
 		-- Sort by length
-		if a.label ~= b.label then
-			if not a.label then
-				return false
-			end
-			if not b.label then
-				return true
-			end
-			return #a.label < #b.label
-		end
+		return #a.label < #b.label
 	end)
 
 	return vim.iter(ipairs(matches))
@@ -470,6 +472,7 @@ function M._on_completedone()
 	if not next(completion_item) then
 		return
 	end
+	M._ctx.completed_records[completion_item.label] = vim.uv.now()
 
 	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
 	local bufnr = vim.api.nvim_get_current_buf()
