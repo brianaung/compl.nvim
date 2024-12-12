@@ -27,7 +27,7 @@ M._ctx = {
 		end
 		M._ctx.pending_requests = {}
 	end,
-	completed_records = {},
+	completion_history = {},
 }
 
 M._completion = {
@@ -275,11 +275,15 @@ function _G.Compl.completefunc(findstart, base)
 			return a.exact or false -- nil should return false
 		end
 
-		-- Sort by recency
-		local a_ts = M._ctx.completed_records[a.label] or -1
-		local b_ts = M._ctx.completed_records[b.label] or -1
-		if a_ts ~= b_ts then
-			return a_ts > b_ts
+		-- Sort by frecency
+		local a_frequency = vim.tbl_get(M._ctx.completion_history, a.label, "frequency")
+		local a_accepted_at = vim.tbl_get(M._ctx.completion_history, a.label, "accepted_at")
+		local a_frecency_score = M._calculate_frecency_score(a_frequency, a_accepted_at)
+		local b_frequency = vim.tbl_get(M._ctx.completion_history, b.label, "frequency")
+		local b_accepted_at = vim.tbl_get(M._ctx.completion_history, b.label, "accepted_at")
+		local b_frecency_score = M._calculate_frecency_score(b_frequency, b_accepted_at)
+		if a_frecency_score ~= b_frecency_score then
+			return a_frecency_score > b_frecency_score
 		end
 
 		-- Sort by ordinal value of 'kind'.
@@ -367,6 +371,39 @@ function _G.Compl.completefunc(findstart, base)
 		end)
 		:totable()
 end
+
+function M._calculate_frecency_score(frequency, accepted_at)
+	frequency, accepted_at = frequency or 0, accepted_at or -1
+	return frequency * M._calculate_recency_weight(accepted_at)
+end
+
+function M._calculate_recency_weight(accepted_at)
+	if accepted_at < 0 then
+		return 1
+	end
+	local age_in_ms = vim.uv.now() - accepted_at
+	if age_in_ms < 10 * 60 * 1000 then
+		print "Within 10 minutes"
+		return 100 -- Within 10 minutes
+	elseif age_in_ms < 60 * 60 * 1000 then
+		print "Within an hour"
+		return 70 -- Within an hour
+	elseif age_in_ms < 24 * 60 * 60 * 1000 then
+		print "Within a day"
+		return 50 -- Within a day
+	elseif age_in_ms < 7 * 24 * 60 * 60 * 1000 then
+		print "Within a week"
+		return 30 -- Within a week
+	else
+		print "Older than a week"
+		return 10 -- Older than a week
+	end
+end
+
+-- M._calculate_recency_weight = function(accepted_at)
+--     local age_in_ms = vim.uv.now() - accepted_at
+--     return 100 / (1 + math.log(1 + age_in_ms / (10 * 60 * 1000))) -- Smooth logarithmic decay
+-- end
 
 function M._start_info()
 	M._info.close_windows()
@@ -472,7 +509,11 @@ function M._on_completedone()
 	if not next(completion_item) then
 		return
 	end
-	M._ctx.completed_records[completion_item.label] = vim.uv.now()
+
+	M._ctx.completion_history[completion_item.label] = {
+		frequency = (vim.tbl_get(M._ctx.completion_history, completion_item.label, "frequency") or 0) + 1,
+		accepted_at = vim.uv.now(),
+	}
 
 	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
 	local bufnr = vim.api.nvim_get_current_buf()
