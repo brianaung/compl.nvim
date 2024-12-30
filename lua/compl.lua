@@ -643,7 +643,7 @@ function M._async_read(file, callback)
 end
 
 function M._async_read_json(file, callback)
-	M.async_read(file, function(buffer)
+	M._async_read(file, function(buffer)
 		local success, data = pcall(vim.json.decode, buffer)
 		if not success or not data then
 			vim.schedule(function()
