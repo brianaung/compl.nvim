@@ -1,5 +1,3 @@
-local util = require "compl.util"
-
 local M = {}
 _G.Compl = {}
 
@@ -84,7 +82,7 @@ function M.setup(opts)
 
 	vim.api.nvim_create_autocmd({ "TextChangedI", "TextChangedP" }, {
 		group = group,
-		callback = util.debounce(M._completion.timer, M._opts.completion.timeout, M._start_completion),
+		callback = M._debounce(M._completion.timer, M._opts.completion.timeout, M._start_completion),
 	})
 
 	vim.api.nvim_create_autocmd("CompleteDone", {
@@ -111,7 +109,7 @@ function M.setup(opts)
 
 		vim.api.nvim_create_autocmd("CompleteChanged", {
 			group = group,
-			callback = util.debounce(M._info.timer, M._opts.info.timeout, M._start_info),
+			callback = M._debounce(M._info.timer, M._opts.info.timeout, M._start_info),
 		})
 	end
 
@@ -153,7 +151,7 @@ function M._start_completion()
 	M._ctx.cursor = { row, col }
 
 	-- Make a request to get completion items
-	local position_params = util.make_position_params()
+	local position_params = M._make_position_params()
 	local cancel_fn = vim.lsp.buf_request_all(bufnr, "textDocument/completion", position_params, function(responses)
 		-- Apply itemDefaults to completion item as per the LSP specs:
 		--
@@ -372,20 +370,6 @@ function _G.Compl.completefunc(findstart, base)
 		:totable()
 end
 
-function M._calculate_frecency_score(frequency, accepted_at)
-	frequency, accepted_at = frequency or 0, accepted_at or -1
-	return frequency * M._calculate_recency_weight(accepted_at)
-end
-
-function M._calculate_recency_weight(accepted_at)
-	if accepted_at < 0 then
-		return 1
-	end
-	local age_in_ms = vim.uv.now() - accepted_at
-	local half_life = 10 * 60 * 1000 -- 10mins
-	return 100 * math.exp(-math.log(2) * age_in_ms / half_life)
-end
-
 function M._start_info()
 	M._info.close_windows()
 	M._ctx.cancel_pending()
@@ -575,8 +559,8 @@ function M._start_snippet()
 
 	M._snippet.items = {}
 	vim.iter(ipairs(M._opts.snippet.paths)):each(function(_, root)
-		local manifest_path = table.concat({ root, "package.json" }, util.sep)
-		util.async_read_json(manifest_path, function(manifest_data)
+		local manifest_path = table.concat({ root, "package.json" }, M._sep)
+		M._async_read_json(manifest_path, function(manifest_data)
 			vim.iter(ipairs((manifest_data.contributes and manifest_data.contributes.snippets) or {}))
 				:filter(function(_, s)
 					if type(s.language) == "table" then
@@ -588,16 +572,30 @@ function M._start_snippet()
 					end
 				end)
 				:map(function(_, snippet_contribute)
-					return vim.fn.resolve(table.concat({ root, snippet_contribute.path }, util.sep))
+					return vim.fn.resolve(table.concat({ root, snippet_contribute.path }, M._sep))
 				end)
 				:each(function(snippet_path)
-					util.async_read_json(snippet_path, parse_snippet_data)
+					M._async_read_json(snippet_path, parse_snippet_data)
 				end)
 		end)
 	end)
 
 	M._start_snippet_server()
 end
+
+-- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L21
+M._sep = (function()
+	if jit then
+		local os = string.lower(jit.os)
+		if os ~= "windows" then
+			return "/"
+		else
+			return "\\"
+		end
+	else
+		return package.config:sub(1, 1)
+	end
+end)()
 
 function M._start_snippet_server()
 	if M._snippet.client_id then
@@ -607,11 +605,115 @@ function M._start_snippet_server()
 
 	M._snippet.client_id = vim.lsp.start {
 		name = "compl_snippets",
-		cmd = util.make_lsp_server {
+		cmd = M._make_lsp_server {
 			isIncomplete = false,
 			items = M._snippet.items,
 		},
 	}
+end
+
+function M._debounce(timer, timeout, callback)
+	return function(...)
+		local argv = { ... }
+		timer:start(timeout, 0, function()
+			timer:stop()
+			vim.schedule_wrap(callback)(unpack(argv))
+		end)
+	end
+end
+
+-- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L755
+function M._async_read(file, callback)
+	vim.uv.fs_open(file, "r", 438, function(err_open, fd)
+		assert(not err_open, err_open)
+		vim.uv.fs_fstat(fd, function(err_fstat, stat)
+			assert(not err_fstat, err_fstat)
+			if stat.type ~= "file" then
+				return callback ""
+			end
+			vim.uv.fs_read(fd, stat.size, 0, function(err_read, data)
+				assert(not err_read, err_read)
+				vim.uv.fs_close(fd, function(err_close)
+					assert(not err_close, err_close)
+					return callback(data)
+				end)
+			end)
+		end)
+	end)
+end
+
+function M._async_read_json(file, callback)
+	M.async_read(file, function(buffer)
+		local success, data = pcall(vim.json.decode, buffer)
+		if not success or not data then
+			vim.schedule(function()
+				vim.notify(string.format("compl.nvim: Could not decode json file %s", file), vim.log.levels.ERROR)
+			end)
+			return
+		end
+		callback(data)
+	end)
+end
+
+function M._make_position_params()
+	if vim.fn.has "nvim-0.11" == 1 then
+		return function(client, _)
+			return vim.lsp.util.make_position_params(0, client.offset_encoding)
+		end
+	end
+	return vim.lsp.util.make_position_params()
+end
+
+function M._make_lsp_server(completion_items)
+	return function(dispatchers)
+		local closing = false
+		local srv = {}
+
+		function srv.request(method, params, callback)
+			if method == "initialize" then
+				callback(nil, {
+					capabilities = {
+						completionProvider = true, -- the server has to provide completion support (true or pass options table)
+					},
+				})
+			elseif method == "textDocument/completion" then
+				callback(nil, completion_items)
+			elseif method == "shutdown" then
+				callback(nil, nil)
+			end
+			return true, 1
+		end
+
+		function srv.notify(method, params)
+			if method == "exit" then
+				dispatchers.on_exit(0, 15)
+			end
+		end
+
+		function srv.is_closing()
+			return closing
+		end
+
+		function srv.terminate()
+			closing = true
+		end
+
+		return srv
+	end
+end
+
+function M._calculate_frecency_score(frequency, accepted_at)
+	frequency, accepted_at = frequency or 0, accepted_at or -1
+	return frequency * M._calculate_recency_weight(accepted_at)
+end
+
+function M._calculate_recency_weight(accepted_at)
+	if accepted_at < 0 then
+		return 1
+	end
+	local age_in_ms = vim.uv.now() - accepted_at
+	local half_life = 10 * 60 * 1000 -- 10mins
+	return 100 * math.exp(-math.log(2) * age_in_ms / half_life)
 end
 
 return M
