@@ -1,23 +1,23 @@
 # compl.nvim
-A minimal and **dependency-free** auto-completion plugin built on top of Vim's ins-completion mechanism.
+A lightweight, native-first completion experience for Neovim.
 
 ## Features
-- **Asynchronous completion** with customizable debounce for fast, responsive suggestions.
-- **Native snippet expansion** integration with Neovim’s built-in snippet system.
-- Support for **VS Code style custom snippets** by [internally running a minimal LSP server](#using-vs-code-style-custom-snippets), seamlessly integrating snippet items into the existing completion workflow.
-- Ability to apply **additional text edits** (e.g., auto-imports) during completion.
-- **Rich documentation** in an info window for better context and understanding.
-- **Zero flicker** when refreshing the completion list, ensuring a smooth and seamless experience.
-- **Dynamic sorting** of completion items in multiple steps, improving relevance and accuracy.
-- **Fuzzy matching** for flexible, quick word completion, even with partial inputs.
-- **Smart word replacement** for completing repeated words after the cursor, saving time and effort.
+- **Asynchronous completion** with customizable debounce for responsiveness
+- **Native snippet integration** using Neovim’s built-in snippet system
+- Support for [**VS Code style snippets**](#using-vs-code-style-custom-snippets)
+- Ability to apply **additional text edits** (e.g., auto-imports)
+- **Rich documentation** display in info window
+- **Zero flicker** completion list updates
+- **Dynamic sorting** including frecency-based ranking
+- **Fuzzy matching** for flexible, quick word completion
+- **Smart word replacement** for post-cursor word completion
 
 #### Planned Features
-- Ability to add custom completion sources (not aiming to be compatible with `nvim-cmp`'s sources).
-- Display of signature help for functions and methods.
+- Custom completion source API
+- Function signature help display
 
 #### Design Philosophy
-Focused on minimalism and performance, without the overhead of complex configurations or external dependencies. Therefore, supporting non-native features such as popup menus with fancy colors/highlights, etc., is a non-goal.
+Focused on leveraging Neovim's native completion infrastructure (See `:h ins-completion`) and built-in LSP client, without external dependencies. The goal is to provide a lightweight and performant completion experience that feels like a natural extension of Neovim itself, while maintaining essential features.
 
 ## Installation
 **Using [lazy.nvim](https://github.com/folke/lazy.nvim):**
@@ -37,7 +37,7 @@ Focused on minimalism and performance, without the overhead of complex configura
     snippet = {
       enable = false,
       paths = {},
-    },
+    }
   },
 }
 ```
