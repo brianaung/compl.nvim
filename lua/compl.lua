@@ -52,8 +52,8 @@ M._snippet = {
 }
 
 function M.setup(opts)
-	if vim.fn.has "nvim-0.10" ~= 1 then
-		vim.notify("compl.nvim: Requires nvim-0.10 or higher.", vim.log.levels.ERROR)
+	if vim.fn.has "nvim-0.11" ~= 1 then
+		vim.notify("compl.nvim: Requires nvim-0.11 or higher.", vim.log.levels.ERROR)
 		return
 	end
 
@@ -656,12 +656,9 @@ function M._async_read_json(file, callback)
 end
 
 function M._make_position_params()
-	if vim.fn.has "nvim-0.11" == 1 then
-		return function(client, _)
-			return vim.lsp.util.make_position_params(0, client.offset_encoding)
-		end
+	return function(client, _)
+		return vim.lsp.util.make_position_params(0, client.offset_encoding)
 	end
-	return vim.lsp.util.make_position_params()
 end
 
 function M._make_lsp_server(completion_items)
