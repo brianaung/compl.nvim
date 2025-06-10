@@ -469,6 +469,12 @@ end
 function M._on_completedone()
 	M._info.close_windows()
 
+	-- Only perform side effects on intentional completion accepts
+	local reason = vim.tbl_get(vim.v.event, "reason")
+	if reason ~= "accept" then
+		return
+	end
+
 	local lsp_data = vim.tbl_get(vim.v.completed_item, "user_data", "nvim", "lsp") or {}
 	local completion_item = lsp_data.completion_item or {}
 	if not next(completion_item) then
