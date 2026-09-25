@@ -18,6 +18,8 @@ M._opts = {
 
 M._ctx = {
 	cursor = nil,
+	completion_start = nil,
+	completion_generation = 0,
 	pending_requests = {},
 	cancel_pending = function()
 		for _, cancel_fn in ipairs(M._ctx.pending_requests) do
@@ -32,6 +34,12 @@ M._completion = {
 	timer = vim.uv.new_timer(),
 	responses = {},
 }
+
+local function is_internal_snippet(item)
+	return type(item) == "table"
+		and type(item.data) == "table"
+		and vim.tbl_get(item.data, "compl", "source") == "snippet"
+end
 
 M._info = {
 	timer = vim.uv.new_timer(),
@@ -48,7 +56,12 @@ M._info = {
 
 M._snippet = {
 	client_id = nil,
+	client_bufnr = nil,
 	items = {},
+	filetype = nil,
+	generation = 0,
+	loading = false,
+	cache = {},
 }
 
 function M.setup(opts)
@@ -114,15 +127,46 @@ function M.setup(opts)
 	end
 
 	if M._opts.snippet.enable then
-		vim.api.nvim_create_autocmd("BufEnter", {
+		vim.api.nvim_create_autocmd({ "BufEnter", "FileType" }, {
 			group = group,
-			callback = M._start_snippet,
+			callback = function(args)
+				if args.buf == vim.api.nvim_get_current_buf() then
+					M._start_snippet(args.buf)
+				end
+			end,
 		})
+		vim.api.nvim_create_user_command("ComplRefreshSnippets", function()
+			M.refresh_snippets()
+		end, {
+			desc = "Reload compl.nvim snippets for the current filetype",
+		})
+		vim.schedule(function()
+			M._start_snippet(vim.api.nvim_get_current_buf())
+		end)
 	end
+end
+
+--- Select the first completion item, or accept the selected item.
+---@return string|nil
+function M.accept_or_select()
+	if vim.fn.pumvisible() == 0 then
+		return nil
+	end
+
+	local info = vim.fn.complete_info()
+	if info.selected == -1 then
+		if #(info.items or {}) == 1 then
+			return vim.keycode "<C-n>" .. vim.keycode "<C-y>"
+		end
+		return "<C-n>"
+	end
+	return "<C-y>"
 end
 
 function M._start_completion()
 	M._ctx.cancel_pending()
+	M._ctx.completion_generation = M._ctx.completion_generation + 1
+	local generation = M._ctx.completion_generation
 
 	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
@@ -149,12 +193,25 @@ function M._start_completion()
 		return
 	end
 	M._ctx.cursor = { row, col }
+	local request_tick = vim.api.nvim_buf_get_changedtick(bufnr)
+	local request_cursor = { row, col }
 
 	-- Make a request to get completion items
 	local position_params = function(client, _)
 		return vim.lsp.util.make_position_params(0, client.offset_encoding)
 	end
 	local cancel_fn = vim.lsp.buf_request_all(bufnr, "textDocument/completion", position_params, function(responses)
+		if
+			generation ~= M._ctx.completion_generation
+			or not vim.api.nvim_buf_is_valid(bufnr)
+			or vim.api.nvim_get_current_buf() ~= bufnr
+			or vim.api.nvim_buf_get_changedtick(bufnr) ~= request_tick
+			or not vim.deep_equal(request_cursor, vim.api.nvim_win_get_cursor(0))
+			or vim.fn.mode() ~= "i"
+		then
+			return
+		end
+
 		-- Apply itemDefaults to completion item as per the LSP specs:
 		--
 		-- "In many cases the items of an actual completion result share the same
@@ -220,6 +277,7 @@ function _G.Compl.completefunc(findstart, base)
 		--                  so we'd eliminate the `plenary.async` result
 		--
 		-- We prefer to use the language server boundary if available.
+		local start
 		for _, response in pairs(M._completion.responses) do
 			if not response.err and response.result then
 				local items = response.result.items or response.result or {}
@@ -229,14 +287,20 @@ function _G.Compl.completefunc(findstart, base)
 					if type(item.textEdit) == "table" then
 						local range = type(item.textEdit.range) == "table" and item.textEdit.range
 							or item.textEdit.insert
-						return range.start.character
+						start = range.start.character
+						break
 					end
 				end
+			end
+			if start then
+				break
 			end
 		end
 
 		-- Fallback to client start (if completion item does not provide text edits)
-		return vim.fn.match(line:sub(1, col), "\\k*$")
+		start = start or vim.fn.match(line:sub(1, col), "\\k*$")
+		M._ctx.completion_start = start
+		return start
 	end
 
 	-- Process and find completion words
@@ -251,7 +315,7 @@ function _G.Compl.completefunc(findstart, base)
 				if M._opts.completion.fuzzy then
 					local fuzzy = vim.fn.matchfuzzy({ text }, base)
 					if vim.startswith(text, base:sub(1, 1)) and (base == "" or next(fuzzy)) then
-						table.insert(matches, { client_id, item })
+						table.insert(matches, { client_id = client_id, item = item })
 					end
 				else
 					if vim.startswith(text, base) then
@@ -338,8 +402,9 @@ function _G.Compl.completefunc(findstart, base)
 			local item = match.item
 			local client_id = match.client_id
 			local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Unknown"
+			local is_snippet = is_internal_snippet(item) or kind == "Snippet"
 			local word
-			if kind == "Snippet" then
+			if is_snippet then
 				word = item.label or ""
 			else
 				word = vim.tbl_get(item, "textEdit", "newText") or item.insertText or item.label or ""
@@ -360,6 +425,7 @@ function _G.Compl.completefunc(findstart, base)
 							completion_item = item,
 							client_id = client_id,
 							replace = replace and word or "",
+							start = is_internal_snippet(item) and M._ctx.completion_start or nil,
 						},
 					},
 				},
@@ -479,12 +545,52 @@ function M._on_completedone()
 		return
 	end
 
-	M._ctx.completion_history[completion_item.label] = {
-		frequency = (vim.tbl_get(M._ctx.completion_history, completion_item.label, "frequency") or 0) + 1,
+	local completion_label = completion_item.label or ""
+	M._ctx.completion_history[completion_label] = {
+		frequency = (vim.tbl_get(M._ctx.completion_history, completion_label, "frequency") or 0) + 1,
 		accepted_at = vim.uv.now(),
 	}
 
+	local internal_snippet = is_internal_snippet(completion_item)
+	if internal_snippet then
+		local snippet = completion_item.insertText or completion_item.label
+		if type(snippet) ~= "string" or snippet == "" then
+			return
+		end
+
+		local completed_item = vim.v.completed_item or {}
+		local completed_word = completed_item.word or ""
+		local replace = vim.tbl_get(lsp_data, "replace") or ""
+		local bufnr = vim.api.nvim_get_current_buf()
+		local winnr = vim.api.nvim_get_current_win()
+		local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
+		local start_col = lsp_data.start or math.max(col - #completed_word, 0)
+		local end_col = col
+		if completed_word == "" then
+			end_col = end_col + #replace
+		end
+		local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
+		end_col = math.min(end_col, #line)
+		start_col = math.max(math.min(start_col, end_col), 0)
+
+		if end_col > start_col then
+			local removed = pcall(vim.api.nvim_buf_set_text, bufnr, row - 1, start_col, row - 1, end_col, { "" })
+			if not removed then
+				return
+			end
+		end
+		pcall(vim.api.nvim_win_set_cursor, winnr, { row, start_col })
+		pcall(vim.snippet.expand, snippet)
+		local expanded_row, expanded_col = unpack(vim.api.nvim_win_get_cursor(winnr))
+		M._ctx.cursor = { expanded_row, expanded_col }
+		return
+	end
+
 	local client = vim.lsp.get_client_by_id(lsp_data.client_id)
+	if not client then
+		return
+	end
+
 	local bufnr = vim.api.nvim_get_current_buf()
 	local winnr = vim.api.nvim_get_current_win()
 	local row, col = unpack(vim.api.nvim_win_get_cursor(winnr))
@@ -492,23 +598,20 @@ function M._on_completedone()
 	-- Update context cursor so completion is not triggered right after complete done.
 	M._ctx.cursor = { row, col }
 
-	if not client then
-		return
-	end
-
-	local completed_word = vim.v.completed_item.word or ""
+	local completed_item = vim.v.completed_item or {}
+	local completed_word = completed_item.word or ""
 	local kind = vim.lsp.protocol.CompletionItemKind[completion_item.kind] or "Unknown"
 
 	-- No words were inserted since it is a duplicate, so set cursor to end of duplicate word
 	if completed_word == "" then
 		local replace = vim.tbl_get(lsp_data, "replace") or ""
-		pcall(vim.api.nvim_win_set_cursor, winnr, { row, col + vim.fn.strwidth(replace) })
+		pcall(vim.api.nvim_win_set_cursor, winnr, { row, col + #replace })
 	end
 
-	-- Expand snippets
+	-- Expand LSP-provided snippets using the existing behavior.
 	if kind == "Snippet" then
-		pcall(vim.api.nvim_buf_set_text, bufnr, row - 1, col - vim.fn.strwidth(completed_word), row - 1, col, { "" })
-		pcall(vim.api.nvim_win_set_cursor, winnr, { row, col - vim.fn.strwidth(completed_word) })
+		pcall(vim.api.nvim_buf_set_text, bufnr, row - 1, col - #completed_word, row - 1, col, { "" })
+		pcall(vim.api.nvim_win_set_cursor, winnr, { row, col - #completed_word })
 		vim.snippet.expand(vim.tbl_get(completion_item, "textEdit", "newText") or completion_item.insertText or "")
 	end
 
@@ -517,13 +620,8 @@ function M._on_completedone()
 	if next(edits) then
 		vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
 	else
-		-- TODO fix bug
-		-- Reproduce:
-		-- 1. Insert newline(s) right after completing an item without exiting insert mode.
-		-- 2. Undo changes.
-		-- Result: Completed item is not removed without the undo changes.
 		local ok, request_id = client.request("completionItem/resolve", completion_item, function(err, result)
-			edits = (not err) and (result.additionalTextEdits or {}) or {}
+			edits = (not err) and (result and result.additionalTextEdits or {}) or {}
 			if next(edits) then
 				vim.lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)
 			end
@@ -539,67 +637,182 @@ function M._on_completedone()
 	end
 end
 
-function M._start_snippet()
-	local filetype = vim.bo.filetype
+local function snippet_matches_filetype(language, filetype)
+	if language == nil or language == "all" then
+		return true
+	end
+	if type(language) == "table" then
+		return vim.iter(language):any(function(value)
+			return value == "all" or value == filetype
+		end)
+	end
+	return language == filetype
+end
 
-	local parse_snippet_data = function(snippet_data)
-		for _, snippet in pairs(snippet_data or {}) do
+local function append_snippet_items(items, snippet_data)
+	for _, snippet in pairs(snippet_data or {}) do
+		if type(snippet) == "table" then
+			local body = type(snippet.body) == "table" and table.concat(snippet.body, "\n") or snippet.body
 			local prefixes = type(snippet.prefix) == "table" and snippet.prefix or { snippet.prefix }
-			for _, prefix in ipairs(prefixes) do
-				table.insert(M._snippet.items, {
-					detail = "snippet",
-					label = prefix,
-					kind = vim.lsp.protocol.CompletionItemKind["Snippet"],
-					documentation = {
-						value = snippet.description,
-						kind = vim.lsp.protocol.MarkupKind.Markdown,
-					},
-					insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
-					insertText = type(snippet.body) == "table" and table.concat(snippet.body, "\n") or snippet.body,
-				})
+			if type(body) == "string" and body ~= "" then
+				for _, prefix in ipairs(prefixes) do
+					if type(prefix) == "string" and prefix ~= "" then
+						table.insert(items, {
+							detail = "snippet",
+							label = prefix,
+							filterText = prefix,
+							sortText = prefix,
+							kind = vim.lsp.protocol.CompletionItemKind.Snippet,
+							documentation = {
+								value = snippet.description,
+								kind = vim.lsp.protocol.MarkupKind.Markdown,
+							},
+							insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
+							insertText = body,
+							data = { compl = { source = "snippet" } },
+						})
+					end
+				end
 			end
 		end
 	end
+end
 
-	M._snippet.items = {}
-	for _, root in ipairs(M._opts.snippet.paths) do
-		local manifest_path = root .. "/package.json"
-		M._async_read_json(manifest_path, function(manifest_data)
-			vim.iter(ipairs((manifest_data.contributes and manifest_data.contributes.snippets) or {}))
-				:filter(function(_, s)
-					if type(s.language) == "table" then
-						return vim.iter(ipairs(s.language)):any(function(_, l)
-							return l == filetype
-						end)
-					else
-						return s.language == filetype
-					end
-				end)
-				:map(function(_, snippet_contribute)
-					return vim.fn.resolve(root .. "/" .. snippet_contribute.path)
-				end)
-				:each(function(snippet_path)
-					M._async_read_json(snippet_path, parse_snippet_data)
-				end)
+function M._start_snippet(bufnr)
+	bufnr = bufnr == 0 and vim.api.nvim_get_current_buf() or (bufnr or vim.api.nvim_get_current_buf())
+	if not vim.api.nvim_buf_is_valid(bufnr) or not M._opts.snippet.enable then
+		return
+	end
+
+	local filetype = vim.bo[bufnr].filetype
+	local current_client = M._snippet.client_id and vim.lsp.get_client_by_id(M._snippet.client_id)
+	if
+		M._snippet.filetype == filetype
+		and (
+			(M._snippet.loading and M._snippet.client_bufnr == bufnr)
+			or (current_client and M._snippet.client_bufnr == bufnr)
+		)
+	then
+		return
+	end
+
+	local generation = M._snippet.generation + 1
+	M._snippet.generation = generation
+	M._snippet.filetype = filetype
+
+	local cached = M._snippet.cache[filetype]
+	if cached then
+		M._snippet.loading = false
+		M._snippet.items = cached
+		M._start_snippet_server(cached, bufnr)
+		return
+	end
+
+	local items = {}
+	M._snippet.items = items
+	M._snippet.loading = true
+	-- Start with an empty table and fill it asynchronously. The server keeps
+	-- this table by reference, so requests made while loading see no stale
+	-- snippets from the previous filetype.
+	M._start_snippet_server(items, bufnr)
+
+	local pending = 0
+	local function is_current()
+		return generation == M._snippet.generation
+	end
+
+	local function finish_one()
+		pending = pending - 1
+		if pending > 0 or not is_current() then
+			return
+		end
+		vim.schedule(function()
+			if
+				generation ~= M._snippet.generation
+				or M._snippet.client_bufnr ~= bufnr
+				or not vim.api.nvim_buf_is_valid(bufnr)
+				or vim.bo[bufnr].filetype ~= filetype
+			then
+				return
+			end
+			M._snippet.cache[filetype] = items
+			M._snippet.loading = false
 		end)
 	end
 
-	M._start_snippet_server()
-end
-
-function M._start_snippet_server()
-	if M._snippet.client_id then
-		vim.lsp.stop_client(M._snippet.client_id)
-		M._snippet.client_id = nil
+	local function parse_snippet_data(snippet_data)
+		if is_current() then
+			append_snippet_items(items, snippet_data)
+		end
 	end
 
-	M._snippet.client_id = vim.lsp.start {
-		name = "compl_snippets",
+	for _, root in ipairs(M._opts.snippet.paths) do
+		pending = pending + 1
+		local manifest_path = root .. "/package.json"
+		M._async_read_json(manifest_path, function(manifest_data)
+			if is_current() then
+				local contributions = manifest_data and manifest_data.contributes and manifest_data.contributes.snippets
+					or {}
+				for _, contribution in ipairs(contributions) do
+					if type(contribution) == "table" and snippet_matches_filetype(contribution.language, filetype) then
+						pending = pending + 1
+						local snippet_path = vim.fn.resolve(root .. "/" .. contribution.path)
+						M._async_read_json(snippet_path, function(snippet_data)
+							parse_snippet_data(snippet_data)
+							finish_one()
+						end)
+					end
+				end
+			end
+			finish_one()
+		end)
+	end
+
+	if pending == 0 then
+		M._snippet.cache[filetype] = items
+		M._snippet.loading = false
+	end
+end
+
+function M.refresh_snippets()
+	M._snippet.cache = {}
+	M._snippet.filetype = nil
+	M._snippet.loading = false
+	M._start_snippet(vim.api.nvim_get_current_buf())
+end
+
+function M._start_snippet_server(items, bufnr)
+	bufnr = bufnr or vim.api.nvim_get_current_buf()
+	if M._snippet.client_id then
+		local client = vim.lsp.get_client_by_id(M._snippet.client_id)
+		if client then
+			pcall(function()
+				client:stop(true)
+			end)
+		end
+		M._snippet.client_id = nil
+		M._snippet.client_bufnr = nil
+	end
+
+	local generation = M._snippet.generation
+	local ok, client_id, start_err = pcall(vim.lsp.start, {
+		name = "compl_snippets_" .. tostring(bufnr) .. "_" .. tostring(generation),
 		cmd = M._make_lsp_server {
 			isIncomplete = false,
-			items = M._snippet.items,
+			items = items,
 		},
-	}
+	}, { bufnr = bufnr })
+	if ok and client_id then
+		M._snippet.client_id = client_id
+		M._snippet.client_bufnr = bufnr
+		return
+	end
+
+	M._snippet.loading = false
+	local message = start_err or "could not start snippet client"
+	vim.schedule(function()
+		vim.notify("compl.nvim: " .. message, vim.log.levels.WARN)
+	end)
 end
 
 function M._debounce(timer, timeout, callback)
@@ -615,17 +828,34 @@ end
 -- https://github.com/nvim-lua/plenary.nvim/blob/master/lua/plenary/path.lua#L755
 function M._async_read(file, callback)
 	vim.uv.fs_open(file, "r", 438, function(err_open, fd)
-		assert(not err_open, err_open)
+		if err_open or not fd then
+			return callback(nil, err_open or "could not open file")
+		end
+
 		vim.uv.fs_fstat(fd, function(err_fstat, stat)
-			assert(not err_fstat, err_fstat)
-			if stat.type ~= "file" then
-				return callback ""
+			if err_fstat or not stat then
+				vim.uv.fs_close(fd, function()
+					callback(nil, err_fstat or "could not stat file")
+				end)
+				return
 			end
+
+			if stat.type ~= "file" then
+				vim.uv.fs_close(fd, function()
+					callback("", nil)
+				end)
+				return
+			end
+
 			vim.uv.fs_read(fd, stat.size, 0, function(err_read, data)
-				assert(not err_read, err_read)
 				vim.uv.fs_close(fd, function(err_close)
-					assert(not err_close, err_close)
-					return callback(data)
+					if err_read then
+						return callback(nil, err_read)
+					end
+					if err_close then
+						return callback(nil, err_close)
+					end
+					callback(data, nil)
 				end)
 			end)
 		end)
@@ -633,15 +863,19 @@ function M._async_read(file, callback)
 end
 
 function M._async_read_json(file, callback)
-	M._async_read(file, function(buffer)
-		local success, data = pcall(vim.json.decode, buffer)
-		if not success or not data then
-			vim.schedule(function()
+	M._async_read(file, function(buffer, read_err)
+		vim.schedule(function()
+			if read_err then
+				return callback(nil, read_err)
+			end
+
+			local success, data = pcall(vim.json.decode, buffer or "")
+			if not success or not data then
 				vim.notify(string.format("compl.nvim: Could not decode json file %s", file), vim.log.levels.ERROR)
-			end)
-			return
-		end
-		callback(data)
+				return callback(nil, "could not decode json")
+			end
+			callback(data, nil)
+		end)
 	end)
 end
 
@@ -666,7 +900,8 @@ function M._make_lsp_server(completion_items)
 		end
 
 		function srv.notify(method, params)
-			if method == "exit" then
+			if method == "exit" and not closing then
+				closing = true
 				dispatchers.on_exit(0, 15)
 			end
 		end
@@ -676,7 +911,10 @@ function M._make_lsp_server(completion_items)
 		end
 
 		function srv.terminate()
-			closing = true
+			if not closing then
+				closing = true
+				dispatchers.on_exit(0, 15)
+			end
 		end
 
 		return srv

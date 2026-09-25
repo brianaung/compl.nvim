@@ -4,6 +4,7 @@ A lightweight, native-first completion experience for Neovim.
 ## Features
 - **Asynchronous completion** with customizable debounce for responsiveness
 - **Native snippet integration** using Neovim’s built-in snippet system
+- Filetype-aware, cached snippet loading with stale-load protection
 - Support for [**VS Code style snippets**](#using-vs-code-style-custom-snippets)
 - Ability to apply **additional text edits** (e.g., auto-imports)
 - **Rich documentation** display in info window
@@ -41,7 +42,7 @@ require("compl").setup {
   snippet = {
     enable = false,
     paths = {
-      -- Optional: point to the package.json manifest of an installed snippet collection.
+      -- Point to the root of an installed snippet collection.
       vim.fn.stdpath "data" .. "/site/pack/core/opt/friendly-snippets",
     },
   },
@@ -71,11 +72,13 @@ vim.keymap.set("i", "<CR>", function()
 end, { expr = true })
 ```
 
-**Change selection using `<Tab>` and `<Shift-Tab>`**
+**Accept completion and expand snippets using `<Tab>`**
 ```lua
-vim.keymap.set("i", "<Tab>", function()
-  if vim.fn.pumvisible() ~= 0 then return "<C-n>" end
-  return "<Tab>"
+vim.keymap.set({ "i", "s" }, "<Tab>", function()
+  if vim.snippet.active { direction = 1 } then
+    return "<cmd>lua vim.snippet.jump(1)<cr>"
+  end
+  return require("compl").accept_or_select() or "<Tab>"
 end, { expr = true })
 
 vim.keymap.set("i", "<S-Tab>", function()
@@ -83,6 +86,11 @@ vim.keymap.set("i", "<S-Tab>", function()
   return "<S-Tab>"
 end, { expr = true })
 ```
+
+With `completeopt = "menuone,noselect,noinsert"`, a single item is accepted
+immediately; with multiple items, the first `<Tab>` selects an item and the
+next one accepts it. Once a snippet is expanded, `<Tab>` moves to its next
+tabstop.
 
 **Snippet jumps**
 ```lua
@@ -100,7 +108,7 @@ end, { expr = true })
 ```
 
 ## Using VS Code style custom snippets
-You can seamlessly integrate custom snippets into your existing completion workflow without any additional dependencies. Snippets from the specified paths are parsed and formatted into appropriate LSP responses, and are passed into a lightweight internal LSP server, which then returns them as completion items when Neovim's LSP client sends a `textDocument/completion` request.
+You can seamlessly integrate custom snippets into your existing completion workflow without any additional dependencies. Snippets from the specified paths are parsed and formatted into appropriate LSP responses, and are passed into a lightweight internal LSP server, which then returns them as completion items when Neovim's LSP client sends a `textDocument/completion` request. Parsed snippets are cached per filetype and stale asynchronous loads are ignored. Use `:ComplRefreshSnippets` after editing snippet files.
 
 ### Defining Your Own Snippets
 If you'd like to define your own snippets for a specific language, you can create a JSON file with your snippets following this [syntax](https://code.visualstudio.com/docs/editor/userdefinedsnippets#_create-your-own-snippets).
